@@ -1,0 +1,15 @@
+# build
+bin/
+obj/
+dist/
+.vs/
+*.user
+TestResults/
+
+# dane użytkownika i pobrane składniki (nigdy w repozytorium: nagrania, modele, ustawienia lokalne)
+settings.json
+knowledge.json
+downloads/
+*.wav
+*.mp4
+*.mkv

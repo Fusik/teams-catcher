@@ -1,0 +1,623 @@
+﻿using System.Diagnostics;
+using System.IO;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using NAudio.Wave;
+
+namespace TeamsCatcher.Core;
+
+// MinP = najniższa pewność słowa w zdaniu (z tokenów Whispera) - niska = zdanie do korekty.
+public sealed record TranscriptSegment(long FromMs, long ToMs, string Speaker, string Text, string Language = "", double MinP = 1);
+
+// Transkrypcja whisper.cpp (whisper-cli, GPU jeśli jest CUDA) z podziałem na mówców po kanałach transcript.wav:
+// lewy = mikrofon (Ja), prawy = Teams + dźwięk prezentacji (Rozmówcy). Każdy kanał osobno z VAD - sprawdzone na żywo:
+// "--diarize" z VAD skleja wszystko w jeden segment, a bez VAD Whisper "halucynuje" w ciszy ("Dziękuję za oglądanie!").
+// Jakość ponad szybkość: kilka przebiegów (język, słowniczek), weryfikacja mówców odciskiem głosu, korekta niepewnych zdań.
+public static class Transcriber
+{
+    public const string TranscriptTxt = "transcript.txt";
+    public const string Me = "Ja", Others = "Rozmówcy", OtherPrefix = "Rozmówca";
+    public static readonly string[] Languages = ["pl", "en"];
+    // Segmenty tego samego mówcy z przerwą do 2 s łączone w jedną wypowiedź.
+    const long JoinGapMs = 2000;
+    // próbka do wyboru języka kanału (PL/EN): pierwsze 2 min; mowa po ciszy VAD i tak trafia do próbki
+    const int LanguageSampleSeconds = 120;
+
+    public static string TranscriptFile(string language) => $"transcript.{language}.txt";
+
+    public static string? MissingFiles(Settings s) =>
+        !File.Exists(s.WhisperCli) ? s.WhisperCli : !File.Exists(s.WhisperModel) ? s.WhisperModel : null;
+
+    sealed record Channel(string Speaker, string Wav, List<TranscriptSegment> Segments, string Language, double Score);
+
+    // Stan po rozpoznaniu mowy (Whisper, hipotezy B/C, -tr, diaryzacja, echo) - do przeliczenia bez ponownego Whispera.
+    public sealed record RecognitionState(List<TranscriptSegment> Segments, List<HypothesisWord> Hypotheses,
+        List<(string Speaker, TranscriptSegment Segment)> Heard, string Glossary);
+
+    const string StateFile = "state.json";
+    static readonly JsonSerializerOptions StateJson = new() { IncludeFields = true };
+
+    static void SaveState(string folder, RecognitionState state, string file = StateFile)
+    {
+        Directory.CreateDirectory(Path.Combine(folder, WorkNotes.Dir));
+        File.WriteAllText(Path.Combine(folder, WorkNotes.Dir, file), JsonSerializer.Serialize(state, StateJson));
+    }
+
+    public static RecognitionState? LoadState(string folder, string file = StateFile)
+    {
+        var path = Path.Combine(folder, WorkNotes.Dir, file);
+        if (!File.Exists(path)) return null;
+        try { return JsonSerializer.Deserialize<RecognitionState>(File.ReadAllText(path), StateJson); }
+        catch (JsonException) { return null; }
+    }
+
+    // Składanie: poprawione zdania z kawałków przesunięte na oś końcowego transcript.wav, rozmówcy po stronie Teams rozpoznani raz
+    // na całym nagraniu (diaryzacja kawałków osobno dawałaby różne numery tej samej osobie). Stan zapisany - przeliczenie bez Whispera.
+    static async Task<RecognitionState> AssembleStateAsync(string folder, string wav, string ffmpeg, Settings settings, Action<string> log,
+        List<string> temp, CancellationToken ct)
+    {
+        var info = JsonSerializer.Deserialize<SessionInfo>(await File.ReadAllTextAsync(Path.Combine(folder, RecordingSession.InfoJson), ct))
+            ?? throw new InvalidDataException("No session.json.");
+        var zero = LiveChunks.FinalZero(info) ?? throw new InvalidDataException("No audio start in session.json.");
+        var segments = new List<TranscriptSegment>();
+        var heard = new List<(string Speaker, TranscriptSegment Segment)>();
+        var glossary = TranscriptLlm.SanitizePrompt(settings.TranscriptGlossary);
+        foreach (var (chunk, chunkFolder) in LiveChunks.List(folder))
+        {
+            var state = LoadState(chunkFolder, LiveChunks.CorrectedFile) ?? throw new InvalidDataException($"Live chunk {chunk.Index} was not processed.");
+            var offset = LiveChunks.OffsetMs(chunk, zero);
+            segments.AddRange(state.Segments.Select(s => LiveChunks.Shift(s, offset)));
+            heard.AddRange(state.Heard.Select(h => (h.Speaker, LiveChunks.Shift(h.Segment, offset))));
+            if (state.Glossary.Length > glossary.Length) glossary = state.Glossary;
+        }
+        log($"Assembled {LiveChunks.List(folder).Count} live chunks: {segments.Count} sentences.");
+        // pytania "do wyjaśnienia" z kawałków -> panel nagrania (odmiany tego samego słowa raz)
+        var questions = new List<UnclearTerm>();
+        foreach (var q in LiveChunks.List(folder).SelectMany(c => KnowledgeBase.LoadQuestions(c.Folder)))
+            if (!questions.Any(x => KnowledgeBase.SameWord(TranscriptLlm.Bare(x.Term), TranscriptLlm.Bare(q.Term)))) questions.Add(q);
+        KnowledgeBase.SaveQuestions(folder, questions);
+        int channels;
+        using (var reader = new WaveFileReader(wav)) channels = reader.WaveFormat.Channels;
+        var others = segments.Where(s => s.Speaker != Me).OrderBy(s => s.FromMs).ToList();
+        if (others.Count > 0)
+        {
+            var othersWav = wav;
+            if (channels == 2)
+            {
+                othersWav = Path.Combine(folder, "whisper_others.wav");
+                temp.Add(othersWav);
+                await RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{wav}\" -af \"pan=mono|c0=c1\" \"{othersWav}\"", folder, ct);
+            }
+            others = await SplitOthersAsync(others, othersWav, settings, log, ct);
+        }
+        var all = segments.Where(s => s.Speaker == Me).Concat(others).OrderBy(s => s.FromMs).ToList();
+        var state2 = new RecognitionState(all, [], heard, glossary);
+        SaveState(folder, state2);
+        return state2;
+    }
+
+    // Full = całe nagranie; Chunk = kawałek w trakcie rozmowy (bez diaryzacji i tłumaczenia, notatka częściowa);
+    // Assemble = po rozmowie złożenie z kawałków (diaryzacja raz na całości, bez ponownej dyskusji, notatka z całości).
+    public enum Mode { Full, Chunk, Assemble }
+
+    // fromState: przeliczenie po objaśnieniu niejasnych słów - dyskusja, tłumaczenie i notatki od nowa, rozpoznanie mowy z zapisu.
+    // Zwraca notatkę częściową (Markdown) w trybie Chunk - do dymka w trayu.
+    public static async Task<string?> RunAsync(string folder, Settings settings, string ffmpeg, Action<string> log, CancellationToken ct, bool fromState = false,
+        Mode mode = Mode.Full)
+    {
+        string? partialNotes = null;
+        var kb = KnowledgeBase.Load(KnowledgeBase.DefaultPath);
+        var wav = Path.Combine(folder, RecordingSession.TranscriptWav);
+        if (!File.Exists(wav)) throw new FileNotFoundException("No transcript.wav in the recording folder.", wav);
+        int channelCount;
+        using (var reader = new WaveFileReader(wav)) channelCount = reader.WaveFormat.Channels;
+        // starsze nagrania: mono (miks) = jeden mówca
+        (string Speaker, string? Pan)[] sides = channelCount == 2 ? [(Me, "c0"), (Others, "c1")] : [(Others, null)];
+        var vad = File.Exists(settings.WhisperVadModel);
+        if (!vad) log("VAD model not found - transcription may contain phantom phrases in silence.");
+        var llm = await Ollama.IsAvailableAsync(settings, ct);
+        if (!llm) log($"Ollama with {settings.CorrectionModel} and {settings.CheckModel} is not available - no glossary pass, correction, translation or notes.");
+
+        var temp = new List<string>();
+        try
+        {
+            var state = fromState ? LoadState(folder) : null;
+            if (mode == Mode.Assemble && state == null) state = await AssembleStateAsync(folder, wav, ffmpeg, settings, log, temp, ct);
+            // Przelicz (po objaśnieniu niejasnych słów): bez Whispera i diaryzacji - stan zapisany po rozpoznaniu mowy
+            var work = new WorkNotes(folder);
+            var correct = llm && settings.CorrectTranscript;
+            string glossary;
+            List<HypothesisWord> hypotheses;
+            List<(string Speaker, TranscriptSegment Segment)> heard;
+            List<TranscriptSegment> segmentsFinal;
+            if (state == null)
+            {
+                // 1. przebieg: każdy kanał po polsku i po angielsku, wygrywa wersja z wyższą pewnością modelu
+                var channels = new List<Channel>();
+                for (var i = 0; i < sides.Length; i++)
+                {
+                    var input = wav;
+                    if (sides[i].Pan is { } pan)
+                    {
+                        input = Path.Combine(folder, $"whisper_{i}.wav");
+                        temp.Add(input);
+                        await RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{wav}\" -af \"pan=mono|c0={pan}\" \"{input}\"", folder, ct);
+                    }
+                    string[] candidates = settings.TranscriptLanguage == "auto" ? Languages : [settings.TranscriptLanguage];
+                    // długi kanał: język wybierany na próbce (pomiar 9,6 min: oba języki na całości = 2 min z 15); potem całość raz
+                    double seconds;
+                    using (var reader = new WaveFileReader(input)) seconds = reader.TotalTime.TotalSeconds;
+                    if (candidates.Length > 1 && seconds > LanguageSampleSeconds + 30)
+                    {
+                        var sample = Path.Combine(folder, $"whisper_{i}_sample.wav");
+                        temp.Add(sample);
+                        await RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{input}\" -t {LanguageSampleSeconds} \"{sample}\"", folder, ct);
+                        var scores = new List<(string Language, double Score)>();
+                        foreach (var language in candidates)
+                        {
+                            scores.Add((language, (await WhisperAsync(sample, Path.Combine(folder, $"whisper_{i}_sample_{language}"), sides[i].Speaker, settings, vad, language, "", folder, ct)).Score));
+                            log($"  step: {sides[i].Speaker} language sample {language.ToUpperInvariant()} (Whisper large-v3, {LanguageSampleSeconds} s)");
+                        }
+                        candidates = [scores.MaxBy(x => x.Score).Language];
+                    }
+                    Channel? best = null;
+                    foreach (var language in candidates)
+                    {
+                        var (segments, score, _) = await WhisperAsync(input, Path.Combine(folder, $"whisper_{i}_{language}"), sides[i].Speaker, settings, vad, language, "", folder, ct);
+                        if (best == null || score > best.Score) best = new Channel(sides[i].Speaker, input, segments, language, score);
+                        log($"  step: {sides[i].Speaker} Whisper large-v3 {language.ToUpperInvariant()} ({seconds:F0} s audio)");
+                    }
+                    channels.Add(best!);
+                }
+                log($"Transcription pass 1 done ({string.Join(", ", channels.Select(c => $"{c.Speaker}: {c.Language.ToUpperInvariant()}"))}).");
+
+                // 2. przebieg: słowniczek nazw i terminów jako prompt Whispera (nazwy własne to najczęstszy błąd)
+                glossary = TranscriptLlm.SanitizePrompt(settings.TranscriptGlossary);
+                if (llm)
+                {
+                    glossary = await TranscriptLlm.BuildGlossaryAsync(settings.TranscriptGlossary, channels.SelectMany(c => c.Segments).ToList(), settings, ct);
+                    log("  step: glossary of names (Llama)");
+                }
+                // Drugi przebieg tylko z nowymi terminami i tylko gdy nie obniża pewności modelu: test na wywiadzie TVN - słowniczek
+                // z samymi nazwiskami już poprawnie zapisanymi zgubił w innym zdaniu słowo "Pytanie".
+                // Tylko nazwy ze słowniczka użytkownika: nazwy wyciągnięte przez model pochodzą z pierwszego przebiegu, a inna pisownia ("Lawa"
+                // zamiast "lawy") uruchamiała pełny drugi przebieg (~1 min na 10 min nagrania) bez zysku.
+                var newTerms = NewTerms(TranscriptLlm.SanitizePrompt(settings.TranscriptGlossary), channels.SelectMany(c => c.Segments));
+                if (newTerms.Count == 0 && glossary.Length > 0) log("Transcription pass 2 skipped: glossary adds nothing new to pass 1.");
+                if (newTerms.Count > 0)
+                {
+                    log($"Transcription pass 2 with glossary (new terms: {string.Join(", ", newTerms)}).");
+                    if (llm) await Ollama.UnloadAsync(settings, ct);
+                    for (var i = 0; i < channels.Count; i++)
+                    {
+                        var c = channels[i];
+                        if (c.Segments.Count == 0) continue;
+                        var (segments, score, _) = await WhisperAsync(c.Wav, Path.Combine(folder, $"whisper_{i}_glossary"), c.Speaker, settings, vad, c.Language, glossary, folder, ct);
+                        if (segments.Count > 0 && score >= c.Score) channels[i] = c with { Segments = segments, Score = score };
+                        log($"  step: {c.Speaker} Whisper large-v3 pass 2 with glossary");
+                    }
+                }
+
+
+                work.Write("01-whisper-large-v3.md", $"Whisper {Path.GetFileNameWithoutExtension(settings.WhisperModel)} (mowa -> tekst, hipoteza A)",
+                    "Główne rozpoznawanie mowy: podstawa transkrypcji, czasy i podział na zdania.",
+                    "Każdy kanał (Ja / Rozmówcy) osobno, z VAD; język PL i EN, wygrywa wyższa pewność modelu. Drugi przebieg ze słowniczkiem tylko przy nowych nazwach.",
+                    $"gotowe: {string.Join(", ", channels.Select(c => $"{c.Speaker} {c.Language.ToUpperInvariant()} ({c.Segments.Count} zdań)"))}",
+                    string.Join("\n", channels.SelectMany(c => c.Segments).OrderBy(s => s.FromMs).Select(s => $"- {Time(s)} {s.Speaker}: {s.Text}")));
+
+                // hipotezy B i C innymi modelami mowy (inne błędy) - głosy w dyskusji modeli
+
+                hypotheses = [];
+                heard = [];
+                if (correct)
+                {
+                    await Ollama.UnloadAsync(settings, ct);
+                    for (var i = 0; i < channels.Count; i++)
+                    {
+                        var c = channels[i];
+                        if (c.Segments.Count == 0) continue;
+                        if (File.Exists(settings.WhisperAltModel))
+                        {
+                            var (_, _, words) = await WhisperAsync(c.Wav, Path.Combine(folder, $"whisper_{i}_alt"), c.Speaker, settings, vad, c.Language, "", folder, ct, settings.WhisperAltModel);
+                            hypotheses.AddRange(words.Select(w => new HypothesisWord("B", c.Speaker, w.FromMs, w.ToMs, w.Text)));
+                            log($"  step: {c.Speaker} hypothesis B (Whisper turbo)");
+                        }
+                        if (Parakeet.Available(settings))
+                        {
+                            hypotheses.AddRange((await Parakeet.TranscribeAsync(c.Wav, ffmpeg, settings, folder, ct)).Select(w => new HypothesisWord("C", c.Speaker, w.FromMs, w.ToMs, w.Text)));
+                            log($"  step: {c.Speaker} hypothesis C (Parakeet)");
+                        }
+                        // mowa od razu po angielsku (Whisper -tr): podpowiedź sensu w dyskusji i dla tłumaczenia na EN
+                        if (c.Language == "pl")
+                        {
+                            var (english, _, _) = await WhisperAsync(c.Wav, Path.Combine(folder, $"whisper_{i}_en"), c.Speaker, settings, vad, "pl", "", folder, ct, translate: true);
+                            heard.AddRange(english.Select(e => (c.Speaker, e)));
+                            log($"  step: {c.Speaker} speech to English (Whisper large-v3 -tr)");
+                        }
+                    }
+                    work.Write("04-whisper-english.md", $"Whisper {Path.GetFileNameWithoutExtension(settings.WhisperModel)} -tr (mowa PL -> tekst EN)",
+                        "Niezależne tłumaczenie mowy na angielski (z dźwięku, nie z tekstu PL) - kontrola sensu i podpowiedź dla tłumaczenia.",
+                        "Przetłumacz mowę z kanałów po polsku od razu na angielski; wynik porównywany z transkrypcją PL po przetłumaczeniu z powrotem.",
+                        heard.Count > 0 ? $"gotowe: {heard.Count} zdań" : "pominięty (brak kanałów po polsku)",
+                        string.Join("\n", heard.OrderBy(h => h.Segment.FromMs).Select(h => $"- {Time(h.Segment)} {h.Speaker}: {h.Segment.Text}")));
+                    foreach (var (source, file, title, role) in new[]
+                    {
+                        ("B", "02-whisper-turbo.md", $"Whisper {Path.GetFileNameWithoutExtension(settings.WhisperAltModel)} (mowa -> tekst, hipoteza B)", "Drugie rozpoznawanie: ten sam typ modelu, inne błędy."),
+                        ("C", "03-parakeet.md", $"NVIDIA {Path.GetFileNameWithoutExtension(settings.ParakeetModel)} (mowa -> tekst, hipoteza C)", "Trzecie rozpoznawanie: inna architektura, kawałki po 5 min zamiast VAD."),
+                    })
+                    {
+                        var found = hypotheses.Where(h => h.Source == source).GroupBy(h => h.Speaker)
+                            .SelectMany(g => Parakeet.Sentences(g.Select(h => (h.FromMs, h.ToMs, h.Text)).ToList(), g.Key, "")).OrderBy(x => x.FromMs).ToList();
+                        work.Write(file, title, role, "Przepisz ten sam dźwięk niezależnie od hipotezy A; wynik jest głosem w dyskusji modeli tekstu, nie podstawą.",
+                            found.Count > 0 ? $"gotowe: {found.Count} zdań" : "pominięty (brak modelu)",
+                            string.Join("\n", found.Select(h => $"- {Time(h)} {h.Speaker}: {h.Text}")));
+                    }
+                    log($"Hypotheses: B {hypotheses.Count(h => h.Source == "B")}, C {hypotheses.Count(h => h.Source == "C")} words.");
+                }
+                // 3. rozmówcy po stronie Teams (diaryzacja + weryfikacja zdań odciskiem głosu)
+                var all = new List<TranscriptSegment>();
+                foreach (var c in channels)
+                    // kawałek: rozmówcy dopiero przy składaniu (jedna diaryzacja na całości = te same numery w całej rozmowie)
+                    all.AddRange(c.Speaker == Others && c.Segments.Count > 0 && mode != Mode.Chunk ? await SplitOthersAsync(c.Segments, c.Wav, settings, log, ct) : c.Segments);
+
+                // 4. echo, 5. pisownia ze słowniczka użytkownika, 6. korekta niepewnych zdań, 7. wypowiedzi, 8. tłumaczenie
+                var withoutEcho = RemoveEcho(all, channelCount == 2 ? StereoLevels(wav) : null);
+                if (all.Count - withoutEcho.Count is var echoes and > 0) log($"Removed microphone echo: {echoes} sentences.");
+                segmentsFinal = Glossary.Apply(withoutEcho, settings.TranscriptGlossary, out var fixedNames);
+                if (fixedNames > 0) log($"Glossary spelling applied: {fixedNames} times.");
+                SaveState(folder, new RecognitionState(segmentsFinal, hypotheses, heard, glossary));
+            }
+            else (segmentsFinal, hypotheses, heard, glossary) = (state.Segments, state.Hypotheses, state.Heard, state.Glossary);
+            // składanie: zdania już przedyskutowane w kawałkach (przeliczenie po objaśnieniach - dyskusja od nowa)
+            if (correct && (mode != Mode.Assemble || fromState))
+            {
+                // LanguageTool tylko na czas dyskusji (Java ~1 GB RAM); bez niego dyskusja idzie na samych hipotezach
+                LanguageTool? tool = null;
+                if (LanguageTool.MissingFiles(settings) is { } missingLt) log($"LanguageTool skipped, not found: {missingLt}");
+                else
+                    try { tool = await LanguageTool.StartAsync(settings, ct); log("  step: LanguageTool start"); }
+                    catch (Exception e) when (e is InvalidOperationException or TimeoutException or System.ComponentModel.Win32Exception) { log($"LanguageTool failed: {e.Message}"); }
+                try
+                {
+                    // poprawki pisowni od użytkownika ("Jamentowy" = "diamentowy") przed dyskusją - modele widzą już poprawne słowo
+                    segmentsFinal = kb.ApplyCorrections(segmentsFinal, out var kbFixed);
+                    if (kbFixed > 0) log($"Knowledge base corrections applied: {kbFixed} times.");
+                    var debate = await Debate.RunAsync(segmentsFinal, hypotheses, heard, tool, glossary, kb, settings, work, log, ct);
+                    KnowledgeBase.SaveQuestions(folder, debate.Unclear);
+                    if (debate.Unclear.Count > 0) log($"To clarify: {debate.Unclear.Count} unclear words ({string.Join(", ", debate.Unclear.Take(8).Select(x => x.Term))}) - see the panel.");
+                    // pisownia ze słowniczka użytkownika wygrywa z hipotezami (TVN: B i C słyszą "Sztur", słowniczek "Stuhr")
+                    segmentsFinal = Glossary.Apply(debate.Segments, settings.TranscriptGlossary, out _);
+                    log($"Debate: agreed {debate.Agreed} of {debate.Disputed} disputed sentences, unresolved {debate.Unresolved}, unsure words marked: {debate.Marked}.");
+                }
+                finally
+                {
+                    if (tool != null) await tool.DisposeAsync();
+                }
+            }
+            if (mode == Mode.Chunk) SaveState(folder, new RecognitionState(segmentsFinal, [], heard, glossary), LiveChunks.CorrectedFile);
+            var turns = MergeTurns(segmentsFinal);
+            var main = MainLanguage(turns);
+            var translations = new string?[turns.Count];
+            // kawałek: bez tłumaczenia (czas w trakcie rozmowy); tłumaczenie całości przy składaniu
+            if (llm && settings.TranslateTranscript && turns.Count > 0 && mode != Mode.Chunk)
+            {
+                translations = await TranslateAsync(turns, heard, settings, ct);
+                log($"  step: transcript translation ({turns.Count} turns: {settings.CheckModel} translates, {settings.CorrectionModel} checks)");
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(folder, TranscriptTxt), Render(turns, translations, main), Encoding.UTF8, ct);
+            foreach (var language in Languages)
+                if (turns.Any(t => t.Language == language) || translations.Any(t => t != null))
+                {
+                    var single = RenderSingle(turns, translations, language);
+                    await File.WriteAllTextAsync(Path.Combine(folder, TranscriptFile(language)), single, Encoding.UTF8, ct);
+                    await File.WriteAllTextAsync(Path.Combine(folder, $"transcript.{language}.md"), RenderMarkdown(single, Path.GetFileName(folder)), Encoding.UTF8, ct);
+                }
+
+            // 9. notatki w głównym języku (z oryginalnych wypowiedzi), w drugim - tłumaczenie sprawdzone ze źródłem
+            var mainFile = Path.Combine(folder, TranscriptFile(main));
+            if (llm && settings.WriteNotes && turns.Count > 0 && File.Exists(mainFile))
+            {
+                var title = Path.GetFileName(folder);
+                log($"Writing meeting notes ({main.ToUpperInvariant()})...");
+                var notes = await MeetingNotes.WriteAsync(await File.ReadAllTextAsync(mainFile, ct), main, settings, work, ct, log, kb,
+                    mode == Mode.Chunk ? MeetingNotes.Partial : MeetingNotes.Full, mode == Mode.Assemble ? LiveChunks.PartialNotes(folder, main) : "");
+                var rendered = MeetingNotes.Render(notes, main, title);
+                await File.WriteAllTextAsync(Path.Combine(folder, MeetingNotes.FileName(main)), rendered, Encoding.UTF8, ct);
+                if (mode == Mode.Chunk) partialNotes = rendered;
+                if (settings.TranslateTranscript && mode != Mode.Chunk)
+                {
+                    var other = Translator.Other(main);
+                    log($"Translating meeting notes ({other.ToUpperInvariant()}) and checking consistency...");
+                    var translated = await MeetingNotes.TranslateAsync(notes, main, other, settings, work, ct);
+                    log("  step: notes translation");
+                    await File.WriteAllTextAsync(Path.Combine(folder, MeetingNotes.FileName(other)), MeetingNotes.Render(translated, other, title), Encoding.UTF8, ct);
+                }
+            }
+            // następne nagranie z kolejki zaczyna od Whispera
+            if (llm) await Ollama.UnloadAsync(settings, ct);
+            return partialNotes;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException { InnerException: TimeoutException })
+        {
+            throw new InvalidOperationException($"Ollama stopped responding ({e.Message}).", e);
+        }
+        finally
+        {
+            foreach (var file in temp) File.Delete(file);
+        }
+    }
+
+    // Transkrypcja do czytania: niepewne słowa ??tak?? na czerwono (Markdown z HTML - VS Code, Obsidian, Typora).
+    public static string RenderMarkdown(string transcript, string title) =>
+        $"# {title}\n\n" + string.Concat(transcript.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => Regex.Replace(line.TrimEnd('\r').Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"), @"\?\?([^?\s][^?]*?)\?\?", "<span style=\"color:#d32f2f\">??$1??</span>") + "\n\n"));
+    // Terminy słowniczka, których nie ma w tekście (bez względu na wielkość liter) - tylko one mogą coś poprawić.
+    public static List<string> NewTerms(string glossary, IEnumerable<TranscriptSegment> segments)
+    {
+        var text = string.Join(" ", segments.Select(s => s.Text));
+        return glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(t => !text.Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    static async Task<(List<TranscriptSegment> Segments, double Score, List<(long FromMs, long ToMs, string Text)> Words)> WhisperAsync(string input, string output, string speaker, Settings settings,
+        bool vad, string language, string prompt, string folder, CancellationToken ct, string? model = null, bool translate = false)
+    {
+        try
+        {
+            await RunAsync(settings.WhisperCli, BuildWhisperArgs(settings, input, output, vad, language, prompt, model, translate), folder, ct);
+            var json = await File.ReadAllTextAsync(output + ".json", ct);
+            return (ParseWhisperJson(json, speaker).Segments, ScoreWhisperJson(json), ParseWhisperWords(json));
+        }
+        finally
+        {
+            File.Delete(output + ".json");
+        }
+    }
+
+    // Średni logarytm prawdopodobieństwa tokenów tekstu (bez tokenów specjalnych "[_...]"); brak mowy = -inf.
+    // Wbudowane wykrywanie języka Whispera myliło angielski z polskim akcentem (p = 0,54 dla "pl"); ta ocena: EN -0,24 vs PL -0,48.
+    public static double ScoreWhisperJson(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var logs = doc.RootElement.GetProperty("transcription").EnumerateArray()
+            .Where(s => s.TryGetProperty("tokens", out _))
+            .SelectMany(s => s.GetProperty("tokens").EnumerateArray())
+            .Where(t => !(t.GetProperty("text").GetString() ?? "").StartsWith("[_"))
+            .Select(t => Math.Log(Math.Max(t.GetProperty("p").GetDouble(), 1e-6)))
+            .ToList();
+        return logs.Count == 0 ? double.NegativeInfinity : logs.Average();
+    }
+
+    // Rozmówca 1/2/3 po stronie Teams; brak modeli albo błąd = zostaje wspólna etykieta "Rozmówcy".
+    static async Task<List<TranscriptSegment>> SplitOthersAsync(List<TranscriptSegment> side, string wav, Settings settings, Action<string> log, CancellationToken ct)
+    {
+        // pyannote community-1 na GPU (lepiej rozróżnia osoby); błąd = sherpa-onnx na CPU
+        if (Diarizer.PyannoteAvailable(settings))
+            try
+            {
+                var (result, speakers) = await Diarizer.RunPyannoteAsync(wav, side, settings, OtherPrefix, Path.GetDirectoryName(wav)!, ct);
+                log($"Speakers on the Teams side: {result.Select(s => s.Speaker).Distinct().Count()} (pyannote community-1 found {speakers}).");
+                return result;
+            }
+            catch (Exception e) when (e is InvalidOperationException or IOException or System.Text.Json.JsonException or System.ComponentModel.Win32Exception)
+            {
+                log($"pyannote diarization failed, using sherpa-onnx: {e.Message}");
+            }
+        if (Diarizer.MissingFiles(settings) is { } missing)
+        {
+            log($"Speaker diarization skipped, file not found: {missing}");
+            return side;
+        }
+        try
+        {
+            var (result, corrected) = await Task.Run(() => Diarizer.Run(wav, side, settings, OtherPrefix), ct);
+            log($"Speakers on the Teams side: {result.Select(s => s.Speaker).Distinct().Count()} (voice check reassigned {corrected} sentences).");
+            return result;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            log($"Speaker diarization failed: {e.Message}");
+            return side;
+        }
+    }
+
+    // heard: Whisper -tr dla tej samej wypowiedzi (ten sam kanał, nachodzący czas) - podpowiedź sensu przy tłumaczeniu PL -> EN.
+    static async Task<string?[]> TranslateAsync(List<TranscriptSegment> turns, List<(string Speaker, TranscriptSegment Segment)> heard, Settings settings, CancellationToken ct)
+    {
+        var result = new string?[turns.Count];
+        foreach (var group in turns.Select((t, i) => (Turn: t, Index: i)).Where(x => Languages.Contains(x.Turn.Language)).GroupBy(x => x.Turn.Language))
+        {
+            var items = group.ToList();
+            var hints = items.Select(x => x.Turn.Language != "pl" ? null : string.Join(' ', heard.Where(h => h.Speaker == (x.Turn.Speaker == Me ? Me : Others)
+                && h.Segment.FromMs < x.Turn.ToMs && x.Turn.FromMs < h.Segment.ToMs).Select(h => h.Segment.Text)) is { Length: > 0 } hint ? hint : null).ToList();
+            var translated = await Translator.TranslateAsync(items.Select(x => x.Turn.Text).ToList(), group.Key, Translator.Other(group.Key), settings, ct, hints);
+            for (var i = 0; i < items.Count; i++) result[items[i].Index] = translated[i];
+        }
+        return result;
+    }
+
+    // --carry-initial-prompt: bez tego prompt działa tylko na pierwsze 30 s nagrania.
+    // translate: Whisper tłumaczy mowę od razu na angielski (-tr) - niezależna od tekstu PL kontrola sensu.
+    public static string BuildWhisperArgs(Settings s, string input, string outputBase, bool vad, string language, string prompt = "", string? model = null, bool translate = false) =>
+        $"-m \"{model ?? s.WhisperModel}\" -l {language} -f \"{input}\" -sns -ml 80 -sow -ojf -of \"{outputBase}\" -np" +
+        (vad ? $" --vad -vm \"{s.WhisperVadModel}\"" : "") +
+        (prompt.Length > 0 ? $" --prompt \"{prompt}\" --carry-initial-prompt" : "") + (translate ? " -tr" : "");
+
+    public static (List<TranscriptSegment> Segments, string Language) ParseWhisperJson(string json, string speaker)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var language = doc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("language", out var l) ? l.GetString() ?? "" : "";
+        var segments = doc.RootElement.GetProperty("transcription").EnumerateArray()
+            .Select(t => new TranscriptSegment(
+                t.GetProperty("offsets").GetProperty("from").GetInt64(),
+                t.GetProperty("offsets").GetProperty("to").GetInt64(),
+                speaker,
+                t.GetProperty("text").GetString()!.Trim(),
+                language,
+                MinTokenP(t)))
+            .Where(t => t.Text.Length > 0)
+            .ToList();
+        return (segments, language);
+    }
+
+    // Słowa z czasami do przycinania hipotezy B do zdań. Czasy z segmentów, rozłożone wg pozycji słowa w tekście: offsety tokenów
+    // przy VAD nie są przeliczane na czas nagrania (nagranie Heroes: przesunięcie ~20 s), offsety segmentów tak.
+    public static List<(long FromMs, long ToMs, string Text)> ParseWhisperWords(string json)
+    {
+        var words = new List<(long FromMs, long ToMs, string Text)>();
+        foreach (var segment in ParseWhisperJson(json, "").Segments)
+        {
+            var text = segment.Text;
+            var length = Math.Max(1, text.Length);
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text, @"\S+"))
+                words.Add((segment.FromMs + (segment.ToMs - segment.FromMs) * m.Index / length,
+                           segment.FromMs + (segment.ToMs - segment.FromMs) * (m.Index + m.Length) / length, m.Value));
+        }
+        return words;
+    }
+    static double MinTokenP(JsonElement segment) =>
+        segment.TryGetProperty("tokens", out var tokens)
+            ? tokens.EnumerateArray().Where(t => !(t.GetProperty("text").GetString() ?? "").StartsWith("[_")).Select(t => t.GetProperty("p").GetDouble()).DefaultIfEmpty(1).Min()
+            : 1;
+
+    // Echo: mikrofon bez słuchawek łapie głośniki, więc "Ja" powtarza w tym samym czasie słowa rozmówcy (sprawdzone na żywo).
+    // Wypowiedź "Ja", której >= 60% słów występuje w nakładającej się wypowiedzi po stronie Teams, jest usuwana.
+    public static List<TranscriptSegment> RemoveEcho(IReadOnlyList<TranscriptSegment> segments, Func<long, long, (double MicDb, double TeamsDb)>? levels = null)
+    {
+        var others = segments.Where(s => s.Speaker != Me).ToList();
+        return segments.Where(s => s.Speaker != Me || !(others.Any(o =>
+            o.FromMs < s.ToMs + 1000 && s.FromMs < o.ToMs + 1000 && WordOverlap(s.Text, o.Text) >= 0.6) || IsMutedEcho(s, others, levels))).ToList();
+    }
+
+    // Przebicie z głośników zniekształcone przez przetwarzanie mikrofonu (Realtek): tekst tylko częściowo zgodny ("Kto ma te manek?"
+    // przy "skoro ma te many"), a korelacja z sygnałem Teams znika. Echo = rozmówcy mówią w tym czasie, mikrofon cichszy od Teams
+    // (własny głos przy mikrofonie jest głośniejszy niż echo) i część słów z okna +-2 s. Wejście w słowo przy cichym mówieniu zostaje,
+    // jeśli nie powtarza słów rozmówców. Bez warunku pokrycia segmentami rozmówców: Whisper pomija część ich mowy (gra, 36-41 s).
+    const double EchoMinOverlap = 0.3, EchoQuieterDb = 3;
+
+    static bool IsMutedEcho(TranscriptSegment s, List<TranscriptSegment> others, Func<long, long, (double MicDb, double TeamsDb)>? levels)
+    {
+        if (levels == null || s.ToMs <= s.FromMs) return false;
+        var (mic, teams) = levels(s.FromMs, s.ToMs);
+        if (mic > teams - EchoQuieterDb) return false;
+        var nearby = string.Join(" ", others.Where(o => o.FromMs < s.ToMs + 2000 && s.FromMs < o.ToMs + 2000).Select(o => o.Text));
+        return WordOverlap(s.Text, nearby) >= EchoMinOverlap;
+    }
+
+    // Poziom RMS (dB) obu kanałów transcript.wav w zadanym czasie: lewy = mikrofon, prawy = Teams.
+    public static Func<long, long, (double MicDb, double TeamsDb)> StereoLevels(string wav)
+    {
+        // czytany tylko fragment segmentu - godzina stereo w pamięci to ok. 230 MB
+        return (from, to) =>
+        {
+            using var reader = new WaveFileReader(wav);
+            var rate = reader.WaveFormat.SampleRate;
+            reader.Position = Math.Min(reader.Length, from * rate / 1000 * reader.WaveFormat.BlockAlign);
+            var samples = new float[(int)Math.Max(0, (to - from) * rate / 1000) * 2];
+            var read = reader.ToSampleProvider().Read(samples, 0, samples.Length) / 2;
+            double mic = 0, teams = 0;
+            for (var i = 0; i < read; i++) { mic += samples[2 * i] * samples[2 * i]; teams += samples[2 * i + 1] * samples[2 * i + 1]; }
+            static double Db(double energy, int count) => 10 * Math.Log10(Math.Max(1e-12, energy / Math.Max(1, count)));
+            return (Db(mic, read), Db(teams, read));
+        };
+    }
+
+    static double WordOverlap(string echo, string original)
+    {
+        var words = Words(echo);
+        if (words.Count == 0) return 0;
+        var source = Words(original).ToHashSet();
+        return words.Count(source.Contains) / (double)words.Count;
+    }
+
+    static List<string> Words(string text) =>
+        text.Split((char[])[' ', ',', '.', '?', '!', ';', ':', '-', '"'], StringSplitOptions.RemoveEmptyEntries).Select(w => w.ToLowerInvariant()).ToList();
+
+    // Kolejne segmenty tego samego mówcy i języka (przerwa <= 2 s) = jedna wypowiedź.
+    public static List<TranscriptSegment> MergeTurns(IEnumerable<TranscriptSegment> segments)
+    {
+        var turns = new List<TranscriptSegment>();
+        foreach (var s in segments.OrderBy(s => s.FromMs))
+        {
+            if (turns.Count > 0 && turns[^1] is var last && last.Speaker == s.Speaker && last.Language == s.Language && s.FromMs - last.ToMs <= JoinGapMs)
+                turns[^1] = last with { ToMs = s.ToMs, Text = last.Text + " " + s.Text, MinP = Math.Min(last.MinP, s.MinP) };
+            else
+                turns.Add(s);
+        }
+        return turns;
+    }
+
+    // Główny język rozmowy = ten, w którym powiedziano najwięcej.
+    public static string MainLanguage(IEnumerable<TranscriptSegment> turns) =>
+        turns.GroupBy(t => t.Language).OrderByDescending(g => g.Sum(t => t.Text.Length)).Select(g => g.Key).FirstOrDefault() ?? "";
+
+    internal static string Time(TranscriptSegment t) => $"[{TimeSpan.FromMilliseconds(t.FromMs):h\\:mm\\:ss}]";
+
+    // Zbiorczy plik: wypowiedź = tłumaczenie, pod nim oryginał (oba z oznaczeniem języka); bez tłumaczenia sam oryginał.
+    public static string Render(IReadOnlyList<TranscriptSegment> turns, IReadOnlyList<string?> translations, string mainLanguage)
+    {
+        var text = new StringBuilder();
+        if (Languages.Contains(mainLanguage))
+            text.AppendLine($"Main language: {Translator.Name(mainLanguage)}{(translations.Any(t => t != null) ? $" · translation: {Translator.Name(Translator.Other(mainLanguage))}" : "")}").AppendLine();
+        for (var i = 0; i < turns.Count; i++)
+        {
+            var t = turns[i];
+            if (translations[i] is { } translation && Languages.Contains(t.Language))
+                text.AppendLine($"{Time(t)} {t.Speaker} ({Translator.Other(t.Language).ToUpperInvariant()}): {translation}");
+            var tag = Languages.Contains(t.Language) ? $" ({t.Language.ToUpperInvariant()})" : "";
+            text.AppendLine($"{Time(t)} {t.Speaker}{tag}: {t.Text}");
+            if (translations[i] != null) text.AppendLine();
+        }
+        return text.ToString();
+    }
+
+    // Plik w jednym języku: oryginał, jeśli wypowiedź była w tym języku, inaczej tłumaczenie (brak tłumaczenia = oryginał z oznaczeniem).
+    // W angielskim pliku etykiety po angielsku (Me / Speaker N / Others).
+    public static string RenderSingle(IReadOnlyList<TranscriptSegment> turns, IReadOnlyList<string?> translations, string language)
+    {
+        var text = new StringBuilder();
+        for (var i = 0; i < turns.Count; i++)
+        {
+            var t = turns[i];
+            var line = t.Language == language ? t.Text : translations[i] ?? $"({t.Language.ToUpperInvariant()}) {t.Text}";
+            text.AppendLine($"{Time(t)} {Label(t.Speaker, language)}: {line}");
+        }
+        return text.ToString();
+    }
+
+    public static string Label(string speaker, string language) => language != "en" ? speaker : speaker switch
+    {
+        Me => "Me",
+        Others => "Others",
+        _ when speaker.StartsWith(OtherPrefix + " ") => "Speaker " + speaker[(OtherPrefix.Length + 1)..],
+        _ => speaker,
+    };
+
+    // Zwraca wyjście procesu (stdout + stderr; parakeet-cli wypisuje słowa z czasami na stderr).
+    internal static async Task<string> RunAsync(string exe, string args, string workingDirectory, CancellationToken ct)
+    {
+        using var p = Process.Start(new ProcessStartInfo(exe, args)
+        {
+            WorkingDirectory = workingDirectory, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        })!;
+        var output = p.StandardOutput.ReadToEndAsync(ct);
+        var errors = p.StandardError.ReadToEndAsync(ct);
+        try { await p.WaitForExitAsync(ct); }
+        catch (OperationCanceledException)
+        {
+            p.Kill(entireProcessTree: true); // zamknięcie aplikacji w trakcie transkrypcji
+            throw;
+        }
+        var stdout = await output;
+        if (p.ExitCode != 0)
+        {
+            var lastLines = string.Join(Environment.NewLine, (await errors).Trim().Split('\n').TakeLast(3));
+            throw new InvalidOperationException($"{Path.GetFileName(exe)} failed ({p.ExitCode}): {lastLines}");
+        }
+        return stdout + "\n" + await errors;
+    }
+}

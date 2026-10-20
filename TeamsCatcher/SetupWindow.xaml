@@ -1,0 +1,52 @@
+﻿<Window x:Class="TeamsCatcher.SetupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:TeamsCatcher"
+        Title="Teams Catcher - components" Width="760" SizeToContent="Height" MaxHeight="760" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen" Icon="pack://application:,,,/Assets/WF/WF.TeamsCatcher.ico"
+        Background="{StaticResource WF.Brush.Navy800}" Foreground="{StaticResource WF.Brush.Ink}"
+        FontFamily="{StaticResource WF.Font.Body}" FontSize="13">
+    <!-- Pierwszy start: składniki pobierane u użytkownika (modele, silniki); nagrywanie działa od razu -->
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+    <DockPanel Margin="16">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+            <TextBlock Text="COMPONENTS TO DOWNLOAD" FontFamily="{StaticResource WF.Font.Display}" FontWeight="Bold" FontSize="16" Foreground="{StaticResource WF.Brush.Blue100}" />
+            <TextBlock TextWrapping="Wrap" Margin="0,6,0,0" Foreground="{StaticResource WF.Brush.Mute}"
+                       Text="Recording Teams calls works right away. Transcription, translation and notes need the models below - downloaded once from their official sources, checked (SHA-256) and then used offline. Your recordings never leave this computer. You can hide this window, the download continues in the background." />
+        </StackPanel>
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="14,6" Margin="8,0,0,0" Command="{Binding DownloadCommand}" Content="Download" />
+            <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="12,6" Margin="8,0,0,0" Command="{Binding CancelCommand}" Content="Cancel" />
+            <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="12,6" Click="Hide_Click" Content="Hide" ToolTip="Close this window; downloading continues (tray menu: Components...)" />
+            <TextBlock Text="{Binding Summary}" VerticalAlignment="Center" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" Foreground="{StaticResource WF.Brush.Slate}" />
+        </DockPanel>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="{StaticResource WF.Brush.Navy700}" BorderBrush="{StaticResource WF.Brush.Line}" BorderThickness="1" Padding="10,5" Margin="0,0,0,4">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="80" />
+                                </Grid.ColumnDefinitions>
+                                <CheckBox IsChecked="{Binding Selected}" VerticalAlignment="Top" Margin="0,2,10,0" IsEnabled="{Binding Done, Converter={x:Static local:Not.Instance}}" />
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{Binding Component.Name}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding Component.Purpose}" FontSize="12" Foreground="{StaticResource WF.Brush.Slate}" TextWrapping="Wrap" />
+                                    <ProgressBar Value="{Binding Progress}" IsIndeterminate="{Binding Indeterminate}" Height="5" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding Status}" FontFamily="{StaticResource WF.Font.Mono}" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}"
+                                               TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="2" Text="{Binding Size}" HorizontalAlignment="Right" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

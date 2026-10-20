@@ -1,0 +1,12 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="TeamsCatcher.Tests/TeamsCatcher.Tests.csproj">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+  <Project Path="TeamsCatcher/TeamsCatcher.csproj">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" xmlns:c2pa="http://c2pa.org/manifest"><defs>
+<linearGradient id="gTop" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#bfe0ff"></stop><stop offset="1" stop-color="#5aa8ff"></stop></linearGradient>
+<linearGradient id="gLeft" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f7bff"></stop><stop offset="1" stop-color="#1446a8"></stop></linearGradient>
+<linearGradient id="gRight" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b55c4"></stop><stop offset="1" stop-color="#0b2a6b"></stop></linearGradient>
+<linearGradient id="gSteel" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f1f5fa"></stop><stop offset=".5" stop-color="#aab7c8"></stop><stop offset="1" stop-color="#6b7b92"></stop></linearGradient>
+<linearGradient id="gBeam" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9fd0ff"></stop><stop offset=".5" stop-color="#3d8bff"></stop><stop offset="1" stop-color="#1446a8"></stop></linearGradient>
+<linearGradient id="gPlate" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1c3f82"></stop><stop offset=".55" stop-color="#0f2250"></stop><stop offset="1" stop-color="#070e1d"></stop></linearGradient>
+<linearGradient id="gRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fb8ff"></stop><stop offset=".5" stop-color="#2a4278"></stop><stop offset="1" stop-color="#22d3ee"></stop></linearGradient>
+
+
+
+
+
+<pattern id="hat" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path d="M0 0V6" stroke="#4d9bff" stroke-opacity=".55" stroke-width="1.2"></path></pattern>
+
+
+
+
+
+
+
+
+
+
+<linearGradient id="gBrL" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a99f92"></stop><stop offset="1" stop-color="#6e645a"></stop></linearGradient><linearGradient id="gBrR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#857b6e"></stop><stop offset="1" stop-color="#4b443c"></stop></linearGradient>
+<filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" seed="4" result="n"></feTurbulence><feColorMatrix in="n" type="matrix" values="0 0 0 0 .08 0 0 0 0 .1 0 0 0 0 .14 0 0 0 1.1 -.42" result="m"></feColorMatrix><feComposite in="m" in2="SourceGraphic" operator="in" result="g"></feComposite><feMerge><feMergeNode in="SourceGraphic"></feMergeNode><feMergeNode in="g"></feMergeNode></feMerge></filter>
+<linearGradient id="gConcL" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a3aebc"></stop><stop offset="1" stop-color="#6b7686"></stop></linearGradient>
+<linearGradient id="gConcR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7d8898"></stop><stop offset="1" stop-color="#4b5666"></stop></linearGradient>
+<linearGradient id="gConcT" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c3ccd8"></stop><stop offset="1" stop-color="#8d98a8"></stop></linearGradient>
+
+<linearGradient id="wfPlate" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1c3f82"></stop><stop offset=".55" stop-color="#0f2250"></stop><stop offset="1" stop-color="#070e1d"></stop></linearGradient><linearGradient id="wfRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fb8ff"></stop><stop offset=".5" stop-color="#2a4278"></stop><stop offset="1" stop-color="#22d3ee"></stop></linearGradient></defs><path d="M6 .5H98L127.5 30V122a5.5 5.5 0 0 1-5.5 5.5H6A5.5 5.5 0 0 1 .5 122V6A5.5 5.5 0 0 1 6 .5Z" fill="url(#wfPlate)" stroke="url(#wfRim)"></path><path d="M16 1V127M32 1V127M48 1V127M64 1V127M80 1V127M96 1V127M112 1V127M1 16H127M1 32H127M1 48H127M1 64H127M1 80H127M1 96H127M1 112H127" stroke="#4d9bff" stroke-opacity=".09" fill="none"></path><svg x="50" y="8" width="68" height="85" viewBox="60 0 120 150"><polygon points="60,106 120,136 120,150 60,120" fill="url(#gBrL)"></polygon><polygon points="120,136 180,106 180,120 120,150" fill="url(#gBrR)"></polygon><polygon points="120,76 180,106 120,136 60,106" fill="#756b5f"></polygon><path d="M90 121L150 91M105 128L165 98M120 106L150 121M105 98L135 113" stroke="#c9bfb2" stroke-width="2.5" fill="none"></path><path d="M60 106L120 136L180 106" fill="none" stroke="#e8eefc" stroke-opacity=".45" stroke-width="1.5"></path><polygon points="60,68 120,98 120,112 60,82" fill="url(#gLeft)"></polygon><polygon points="120,98 180,68 180,82 120,112" fill="url(#gRight)"></polygon><polygon points="120,38 180,68 120,98 60,68" fill="#16409a"></polygon><path d="M80 68H110L130 78M130 58L150 68H160" stroke="#22d3ee" stroke-width="3" fill="none"></path><rect x="112" y="60" width="16" height="12" transform="rotate(0)" fill="#0b1a3a" stroke="#7fb8ff" stroke-width="2"></rect><rect x="117" y="63" width="6" height="6" fill="#a78bfa"></rect><path d="M60 68L120 98L180 68" fill="none" stroke="#e8eefc" stroke-opacity=".45" stroke-width="1.5"></path><polygon points="60,30 120,60 120,74 60,44" fill="url(#gConcL)"></polygon><polygon points="120,60 180,30 180,44 120,74" fill="url(#gConcR)"></polygon><polygon points="120,0 180,30 120,60 60,30" fill="url(#gConcT)"></polygon><path d="M104 18h10a8 8 0 1 1 14 0h10v10a8 8 0 1 0 0 14v10h-34z" fill="url(#gChip)" stroke="#e8eefc" stroke-width="1.5" transform="matrix(.9,-.45,.9,.45,-1,25) translate(-100 -14) scale(.5)"></path><path d="M60 30L120 60L180 30" fill="none" stroke="#e8eefc" stroke-opacity=".45" stroke-width="1.5"></path></svg><rect x="10" y="80" width="44" height="3" fill="#4d9bff"></rect><text x="10" y="116" font-family="Chakra Petch,Inter,Arial,sans-serif" font-weight="700" font-size="34" fill="#fff" letter-spacing="-.7">WT</text></svg>

@@ -1,0 +1,32 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Siatka 24x24. Główny kontur + .Detail (cyjan) -->
+  <Geometry x:Key="WF.Icon.model">M12 3l8 4.5v9L12 21l-8-4.5v-9z</Geometry>
+  <Geometry x:Key="WF.Icon.model.Detail">M4 7.5l8 4.5 8-4.5M12 12v9</Geometry>
+  <Geometry x:Key="WF.Icon.plik">M6 3h8l4 4v14H6z</Geometry>
+  <Geometry x:Key="WF.Icon.plik.Detail">M14 3v4h4M9 12h6M9 16h6</Geometry>
+  <Geometry x:Key="WF.Icon.folder">M3 6h6l2 2h10v11H3z</Geometry>
+  <Geometry x:Key="WF.Icon.folder.Detail">M3 11h18</Geometry>
+  <Geometry x:Key="WF.Icon.excel">M4 4h16v16H4z</Geometry>
+  <Geometry x:Key="WF.Icon.excel.Detail">M4 10h16M10 4v16</Geometry>
+  <Geometry x:Key="WF.Icon.polacz">M3 9h7v6H3zM14 9h7v6h-7z</Geometry>
+  <Geometry x:Key="WF.Icon.polacz.Detail">M10 12h4</Geometry>
+  <Geometry x:Key="WF.Icon.odswiez">M20 12a8 8 0 10-2.3 5.7</Geometry>
+  <Geometry x:Key="WF.Icon.odswiez.Detail">M20 5v5h-5</Geometry>
+  <Geometry x:Key="WF.Icon.generuj">M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z</Geometry>
+  <Geometry x:Key="WF.Icon.generuj.Detail">M12 9.5v5M9.5 12h5</Geometry>
+  <Geometry x:Key="WF.Icon.ustawienia">M4 7h16M4 17h16</Geometry>
+  <Geometry x:Key="WF.Icon.ustawienia.Detail">M9 4v6M15 14v6</Geometry>
+  <Geometry x:Key="WF.Icon.walidacja">M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z</Geometry>
+  <Geometry x:Key="WF.Icon.walidacja.Detail">M8.5 12l2.5 2.5 4.5-5</Geometry>
+  <Geometry x:Key="WF.Icon.ostrzezenie">M12 3l10 18H2z</Geometry>
+  <Geometry x:Key="WF.Icon.ostrzezenie.Detail">M12 10v5M12 18v.5</Geometry>
+  <Geometry x:Key="WF.Icon.zamknij">M4 4h16v16H4z</Geometry>
+  <Geometry x:Key="WF.Icon.zamknij.Detail">M9 9l6 6M15 9l-6 6</Geometry>
+  <Geometry x:Key="WF.Icon.eksport">M4 14v6h16v-6</Geometry>
+  <Geometry x:Key="WF.Icon.eksport.Detail">M12 15V3M7 8l5-5 5 5</Geometry>
+  <Geometry x:Key="WF.Icon.import">M4 14v6h16v-6</Geometry>
+  <Geometry x:Key="WF.Icon.import.Detail">M12 3v12M7 10l5 5 5-5</Geometry>
+  <Geometry x:Key="WF.Icon.punkt">M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0</Geometry>
+  <Geometry x:Key="WF.Icon.punkt.Detail">M12 3v5M12 16v5M3 12h5M16 12h5</Geometry>
+</ResourceDictionary>

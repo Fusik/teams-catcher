@@ -1,0 +1,15 @@
+<Application x:Class="TeamsCatcher.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Styl WF BIM (kopia w Assets/WF - projekt jest niezależny od innych folderów) -->
+                <ResourceDictionary Source="pack://application:,,,/Assets/WF/WF.Colors.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/Assets/WF/WF.Icons.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/Assets/WF/WF.Controls.xaml" />
+                <ResourceDictionary Source="Themes/WfTheme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

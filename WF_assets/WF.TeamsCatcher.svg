@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128"><defs>
+<linearGradient id="wfPlate" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1c3f82"/><stop offset=".55" stop-color="#0f2250"/><stop offset="1" stop-color="#070e1d"/></linearGradient>
+<linearGradient id="wfRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7fb8ff"/><stop offset=".5" stop-color="#2a4278"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
+<linearGradient id="gScreen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f7bff"/><stop offset="1" stop-color="#1446a8"/></linearGradient>
+</defs>
+<path d="M6 .5H98L127.5 30V122a5.5 5.5 0 0 1-5.5 5.5H6A5.5 5.5 0 0 1 .5 122V6A5.5 5.5 0 0 1 6 .5Z" fill="url(#wfPlate)" stroke="url(#wfRim)"/>
+<path d="M16 1V127M32 1V127M48 1V127M64 1V127M80 1V127M96 1V127M112 1V127M1 16H127M1 32H127M1 48H127M1 64H127M1 80H127M1 96H127M1 112H127" stroke="#4d9bff" stroke-opacity=".09" fill="none"/>
+<!-- okno rozmowy z nagrywaniem -->
+<rect x="52" y="14" width="64" height="46" fill="url(#gScreen)" stroke="#7fb8ff" stroke-width="2"/>
+<rect x="52" y="14" width="64" height="8" fill="#0b1a3a"/>
+<circle cx="76" cy="38" r="7" fill="#bfe0ff"/>
+<path d="M64 56c2-7 7-10 12-10s10 3 12 10" fill="#bfe0ff"/>
+<circle cx="104" cy="32" r="5" fill="#f87171"/>
+<!-- fala dźwięku -->
+<path d="M54 74v6M62 70v14M70 66v22M78 72v10M86 68v18M94 73v8M102 70v14M110 74v6" stroke="#22d3ee" stroke-width="3" fill="none"/>
+<rect x="10" y="80" width="44" height="3" fill="#4d9bff"/>
+<text x="10" y="116" font-family="Chakra Petch,Inter,Arial,sans-serif" font-weight="700" font-size="34" fill="#fff" letter-spacing="-.7">TC</text>
+</svg>
