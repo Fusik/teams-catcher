@@ -344,9 +344,10 @@
             <!-- Wszystko, co zmienia pracę modeli tekstu: zasady notatek, modele, rundy, język, baza wiedzy (słowniczek: TEAMS CALLS) -->
             <TabItem Header="MODELS">
                 <Grid Height="340">
+                    <!-- baza wiedzy szersza: rośnie z każdym spotkaniem -->
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="2*" />
                     </Grid.ColumnDefinitions>
                     <GroupBox Grid.Column="0" Margin="0,0,8,0">
                         <GroupBox.Header>
@@ -364,29 +365,13 @@
                     </GroupBox>
                     <GroupBox Grid.Column="1" Margin="0">
                         <GroupBox.Header>
-                            <TextBlock Text="TEXT MODELS AND KNOWLEDGE" />
+                            <TextBlock Text="LANGUAGE AND KNOWLEDGE BASE" />
                         </GroupBox.Header>
                         <DockPanel>
-                            <Grid DockPanel.Dock="Top">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="60" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition /><RowDefinition /><RowDefinition />
-                                </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Style="{StaticResource Label}" Text="WRITER" ToolTip="Ollama model that writes: corrections, notes, translations (e.g. llama3.1:8b)" />
-                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding CorrectionModel, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Writer model" />
-                                <TextBlock Grid.Row="0" Grid.Column="2" Style="{StaticResource Label}" Text="ROUNDS" Margin="12,2,8,2" ToolTip="Discussion rounds per disputed sentence and note check rounds (1-6)" />
-                                <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding DebateRounds, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Discussion rounds" />
-                                <TextBlock Grid.Row="1" Style="{StaticResource Label}" Text="CHECKER" ToolTip="Ollama model that checks the writer (different family = cross-check; e.g. qwen3.5:4b)" />
-                                <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CheckModel, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Checker model" />
-                                <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource Label}" Text="VRAM MB" Margin="12,2,8,2" ToolTip="Memory budget for text models; 0 = whole graphics card. Both fit = both stay loaded (faster)." />
-                                <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding VramBudgetMb, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="VRAM budget in MB" />
-                                <TextBlock Grid.Row="2" Style="{StaticResource Label}" Text="LANGUAGE" ToolTip="Language of the conversation: auto = chosen per channel (PL/EN)" />
-                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,2">
+                            <!-- modele tekstu (korekta, notatka) tylko w settings.json - tu język rozmowy i baza wiedzy -->
+                            <DockPanel DockPanel.Dock="Top">
+                                <TextBlock DockPanel.Dock="Left" Margin="0,2,8,2" Style="{StaticResource Label}" Text="LANGUAGE" ToolTip="Language of the conversation: auto = chosen per channel (PL/EN)" />
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
                                     <ToggleButton x:Name="LanguageToggle" AutomationProperties.Name="Conversation language" Padding="10,3" Foreground="{StaticResource WF.Brush.Blue100}" Background="#332F7BFF"
                                                   BorderBrush="{StaticResource WF.Brush.Blue300}">
                                         <TextBlock Text="{Binding TranscriptLanguage, StringFormat={}{0} ▾}" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" />
@@ -396,7 +381,7 @@
                                         <ListBox x:Name="LanguageList" ItemsSource="{Binding LanguageOptions}" SelectionChanged="LanguageList_SelectionChanged" />
                                     </Popup>
                                 </StackPanel>
-                            </Grid>
+                            </DockPanel>
                             <DockPanel DockPanel.Dock="Top" Margin="0,8,0,4">
                                 <TextBlock DockPanel.Dock="Left" Style="{StaticResource Label}" Text="KNOWLEDGE BASE" Margin="0,0,8,0"
                                            ToolTip="Explanations the models use to understand terms. Only entries that occur in the analysed fragment are sent to the models, so a large base does not slow them down. Misheard word: meaning = &quot;=correct&quot; (e.g. term diamentowy, other spelling Jamentowy, meaning =diamentowy)." />

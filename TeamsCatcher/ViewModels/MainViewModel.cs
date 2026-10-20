@@ -147,7 +147,6 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(RecordingSteps));
     }
 
-
     string _notes = "";
     public string Notes { get => _notes; private set => Set(ref _notes, value); }
 
@@ -240,30 +239,6 @@ public sealed class MainViewModel : ObservableObject
     public string KnowledgeCount => $"{KnowledgeView.Cast<object>().Count(r => r is KnowledgeRow)} / {KnowledgeRows.Count}";
     public string ModelsStatus { get => _modelsStatus; private set => Set(ref _modelsStatus, value); }
     public string[] LanguageOptions { get; } = ["auto", "pl", "en"];
-
-    public string CorrectionModel
-    {
-        get => _settings.CorrectionModel;
-        set { if (value.Trim().Length > 0) { _settings.CorrectionModel = value.Trim(); SaveSettings(); } OnPropertyChanged(); }
-    }
-
-    public string CheckModel
-    {
-        get => _settings.CheckModel;
-        set { if (value.Trim().Length > 0) { _settings.CheckModel = value.Trim(); SaveSettings(); } OnPropertyChanged(); }
-    }
-
-    public int DebateRounds
-    {
-        get => _settings.DebateRounds;
-        set { _settings.DebateRounds = Math.Clamp(value, 1, 6); SaveSettings(); OnPropertyChanged(); }
-    }
-
-    public int VramBudgetMb
-    {
-        get => _settings.VramBudgetMb;
-        set { _settings.VramBudgetMb = Math.Max(0, value); SaveSettings(); Ollama.ResetContexts(); OnPropertyChanged(); }
-    }
 
     public string TranscriptLanguage
     {
