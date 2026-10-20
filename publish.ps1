@@ -1,5 +1,5 @@
 ﻿# Wersja portable: mała paczka (exe + ffmpeg + modele sherpa + model pyannote), reszta pobiera się u użytkownika przy pierwszym starcie
-# (okno "Components": Whisper, Parakeet, Java + LanguageTool, Ollama i modele tekstu, Python + PyTorch dla pyannote - wersje i SHA-256
+# (okno "Components": Whisper, Java + LanguageTool, Ollama i modele tekstu, Python + PyTorch (pyannote, Qwen3-ASR), Qwen3-ASR - wersje i SHA-256
 # przypięte w Core/Components.cs). Model pyannote jedzie w paczce, bo na Hugging Face wymaga akceptacji warunków (konto + token).
 # -Full: paczka offline ze wszystkim, co jest na tym komputerze (bez pobierania u użytkownika; bez Ollamy).
 # Użycie: powershell -File publish.ps1 [-Out dist] [-NoZip] [-Full]
@@ -11,6 +11,8 @@ param(
     [string]$Tools = "C:\Users\WF\Videos\TeamsCatcher\tools",
     [string]$Ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source,
     [switch]$NoZip,
+    # folder modelu Qwen3-ASR (tylko -Full)
+    [string]$QwenAsr = "$PSScriptRoot\TeamsCatcher\bin\x64\Debug\net10.0-windows10.0.19041.0\win-x64\models\Qwen3-ASR-1.7B",
     [switch]$Full
 )
 $ErrorActionPreference = "Stop"
@@ -25,10 +27,9 @@ if ($Full) {
     $copies += @(
         @("$WhisperModels\ggml-large-v3.bin", "whisper\ggml-large-v3.bin"),
         @("$WhisperModels\ggml-large-v3-turbo.bin", "whisper\ggml-large-v3-turbo.bin"),
-        @("$WhisperModels\ggml-parakeet-tdt-0.6b-v3-f16.bin", "whisper\ggml-parakeet-tdt-0.6b-v3-f16.bin"),
         @("$WhisperModels\ggml-silero-v5.1.2.bin", "whisper\ggml-silero-v5.1.2.bin")
     )
-    foreach ($f in "$WhisperBin\whisper-cli.exe", "$WhisperBin\parakeet-cli.exe", "$Tools\jre\bin\java.exe", "$Tools\languagetool\languagetool-server.jar") { if (-not (Test-Path $f)) { throw "Missing: $f" } }
+    foreach ($f in "$WhisperBin\whisper-cli.exe", "$QwenAsr\config.json", "$Tools\jre\bin\java.exe", "$Tools\languagetool\languagetool-server.jar") { if (-not (Test-Path $f)) { throw "Missing: $f" } }
 }
 foreach ($c in $copies) { if (-not (Test-Path $c[0])) { throw "Missing: $($c[0])" } }
 $pyModel = "$Tools\pyannote-models\community-1"
@@ -47,10 +48,13 @@ Copy-Item $pyModel "$Out\pyannote-models\community-1" -Recurse -Exclude ".cache"
 Remove-Item "$Out\pyannote-models\community-1\.cache" -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($Full) {
-    Get-ChildItem $WhisperBin -File | Where-Object { $_.Name -match '^(whisper-cli\.exe|whisper\.dll|parakeet-cli\.exe|parakeet\.dll|ggml.*\.dll|cublas.*\.dll|cudart.*\.dll|nvrtc.*\.dll)$' } |
+    Get-ChildItem $WhisperBin -File | Where-Object { $_.Name -match '^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|cublas.*\.dll|cudart.*\.dll|nvrtc.*\.dll)$' } |
         Copy-Item -Destination "$Out\whisper"
     Copy-Item "$Tools\jre" "$Out\jre" -Recurse
     Copy-Item "$Tools\languagetool" "$Out\languagetool" -Recurse
+    # wersja C (Qwen3-ASR) - folder modelu jak po pobraniu w oknie Components
+    New-Item -ItemType Directory -Force "$Out\models" | Out-Null
+    Copy-Item $QwenAsr "$Out\models\Qwen3-ASR-1.7B" -Recurse -Exclude ".cache"
     # venv uv wskazuje na Pythona w profilu użytkownika, więc do paczki idzie samodzielny Python + pakiety venv
     $pyEnv = "$Tools\pyannote"
     $pyHome = ((Get-Content "$pyEnv\pyvenv.cfg") -match '^home\s*=' -replace '^home\s*=\s*', '').Trim()

@@ -53,8 +53,9 @@ public sealed class Settings
     // Druga hipoteza (inny model = inne błędy) dla korekty; brak pliku = bez drugiej hipotezy.
     public string WhisperAltModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "ggml-large-v3-turbo.bin");
     public string WhisperVadModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "ggml-silero-v5.1.2.bin");
-    // Wersja C rozpoznania mowy: Qwen3-ASR (asr.py w środowisku pyannote); model z Hugging Face przy pierwszym użyciu (~4 GB)
-    public string QwenAsrModel { get; set; } = "Qwen/Qwen3-ASR-1.7B";
+    // Wersja C rozpoznania mowy: Qwen3-ASR (asr.py w środowisku pyannote); folder modelu (pobiera okno Components, ~4,7 GB)
+    // albo nazwa z Hugging Face (pobranie przy pierwszym użyciu)
+    public string QwenAsrModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "models", "Qwen3-ASR-1.7B");
     // Pisownia i gramatyka (LanguageTool na Javie); brak plików = bez sprawdzania.
     public string JavaExe { get; set; } = Path.Combine(AppContext.BaseDirectory, "jre", "bin", "java.exe");
     public string LanguageToolDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "languagetool");

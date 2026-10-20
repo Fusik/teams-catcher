@@ -10,7 +10,8 @@ Paczka jest mała, a ciężkie modele i silniki pobierają się u użytkownika p
 | `ffmpeg.exe` (9.x z `gfxcapture`) | nagrywanie musi działać od pierwszej minuty |
 | `diarization\` (sherpa-onnx: segmentacja + CAM++, ~35 MB) | zapasowa diaryzacja na CPU |
 | `pyannote-models\community-1` (~33 MB) | model bramkowany na Hugging Face (konto + akceptacja warunków + token), więc użytkownik nie pobierze go sam; licencja CC-BY-4.0 pozwala go dołączyć z podaniem autora |
-| `diarize.py`, `pyannote-requirements.txt` | skrypt diaryzacji i przypięte wersje pakietów Pythona |
+| `diarize.py`, `asr.py`, `pyannote-requirements.txt` | skrypty diaryzacji i wersji C (Qwen3-ASR) oraz przypięte wersje pakietów Pythona |
+| `notes-rules.md`, `notes-style.md` | zasady notatki lokalnej i styl notatki dla Copilota |
 | `README.txt` | |
 
 ## Pobierane u użytkownika (okno "Components")
@@ -19,24 +20,25 @@ Wersje i sumy SHA-256 są przypięte w `Core/Components.cs`. Plik o innej sumie 
 
 | Składnik | Źródło | Rozmiar |
 |---|---|---|
-| Whisper + Parakeet (whisper-cli, parakeet-cli, CUDA 12) | GitHub ggml-org/whisper.cpp, wydanie b5454 (v1.9.5) | 653 MB |
+| Whisper (whisper-cli, CUDA 12) | GitHub ggml-org/whisper.cpp, wydanie b5454 (v1.9.5) | 653 MB |
 | Whisper large-v3 | Hugging Face ggerganov/whisper.cpp | 2,9 GB |
 | Silero VAD v5.1.2 | Hugging Face ggml-org/whisper-vad | 1 MB |
-| Whisper large-v3-turbo | Hugging Face ggerganov/whisper.cpp | 1,5 GB |
-| Parakeet TDT 0.6B v3 (f16) | Hugging Face ggml-org/parakeet-GGUF | 1,2 GB |
-| Java 21 (Temurin JRE 21.0.12.1) | GitHub adoptium | 47 MB |
-| LanguageTool 6.6 | languagetool.org | 240 MB |
+| Whisper large-v3-turbo (wersja B, na żywo) | Hugging Face ggerganov/whisper.cpp | 1,5 GB |
+| Java 21 (Temurin JRE 21.0.12.1) - tylko opcja Correct | GitHub adoptium | 47 MB |
+| LanguageTool 6.6 - tylko opcja Correct | languagetool.org | 240 MB |
 | Ollama 0.40.6 portable | GitHub ollama, **tylko gdy żadna Ollama nie działa** | 1,4 GB |
-| llama3.1:8b, qwen3.5:4b | rejestr Ollamy (`/api/pull`) | 4,6 + 3,1 GB |
-| Python 3.12.14 + PyTorch cu126 + pyannote.audio 4.0.7 | uv 0.12.18 (GitHub astral-sh), PyPI, download.pytorch.org | ~2,8 GB |
+| Model notatki `hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M` | Ollama z Hugging Face | 3,0 GB |
+| Korekta: `hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0`, `hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0` | Ollama z Hugging Face | 2,7 + 1,6 GB |
+| Python 3.12.14 + PyTorch cu126 + pyannote.audio 4.0.7 + qwen-asr 0.0.6 | uv 0.12.18 (GitHub astral-sh), PyPI, download.pytorch.org | ~3 GB |
+| Qwen3-ASR-1.7B (wersja C) do `models\Qwen3-ASR-1.7B` | Hugging Face Qwen/Qwen3-ASR-1.7B (`snapshot_download` środowiskiem Pythona) | 4,7 GB |
 
-Razem ~15-18 GB (bez Ollamy portable, gdy jest zainstalowana).
+Razem ~20 GB (bez Ollamy portable, gdy jest zainstalowana). Składników Correct (Java, LanguageTool, 2 modele) można nie pobierać, gdy opcja Correct jest wyłączona.
 
 ## Jak działa okno "Components"
 
 1. Przy starcie aplikacja sprawdza, czego brakuje. Składnik jest obecny, gdy istnieje jego plik pod ścieżką z `settings.json`, więc własna konfiguracja też się liczy.
 2. Gdy czegoś brakuje, pokazuje się okno z listą: nazwa, do czego służy, rozmiar, pasek postępu. Pod listą jest suma do pobrania i wolne miejsce na dysku, z ostrzeżeniem, gdy go za mało.
-3. Składniki można odznaczyć (np. turbo albo pyannote). Bez nich jakość jest niższa, ale potok działa, bo brak hipotezy B/C oznacza dyskusję bez niej, a brak pyannote diaryzację sherpa na CPU.
+3. Składniki można odznaczyć (np. turbo, Qwen3-ASR albo pyannote). Bez nich jakość jest niższa, ale potok działa: brak wersji B/C = notatka z mniejszej liczby wersji, brak pyannote = diaryzacja sherpa na CPU.
 4. **Download** pobiera po kolei:
    - wznawianie po przerwaniu (plik `.part` + HTTP Range);
    - kontrola SHA-256;
@@ -52,7 +54,7 @@ Razem ~15-18 GB (bez Ollamy portable, gdy jest zainstalowana).
 
 ## pyannote (Python)
 
-uv instaluje samodzielnego Pythona do `pyannote\` (ten sam układ co w paczce offline: `pyannote\python.exe`). Potem instaluje pakiety z `pyannote-requirements.txt`: dokładne wersje z działającej instalacji, z PyTorch z indeksu cu126. Cache uv jest usuwany po instalacji.
+uv instaluje samodzielnego Pythona do `pyannote\` (ten sam układ co w paczce offline: `pyannote\python.exe`). Potem instaluje pakiety z `pyannote-requirements.txt`: dokładne wersje z działającej instalacji (pyannote i qwen-asr razem, sprawdzone, że diaryzacja dalej działa), z PyTorch z indeksu cu126. Cache uv jest usuwany po instalacji. Następny składnik, Qwen3-ASR, pobiera się tym samym Pythonem.
 
 ## Budowanie paczki
 
@@ -80,7 +82,7 @@ Pod spodem działa `publish.ps1` (`-Full` dla paczki offline, `-Out`, `-NoZip`).
 - Windows 10 2004+ / 11 x64, nowy Teams.
 - NVIDIA ze sterownikiem 551+ (CUDA 12). Bez niej Whisper liczy na CPU, bardzo wolno.
 - Folder aplikacji z prawem zapisu (nie Program Files), bo tam lądują pobrane składniki.
-- ~20 GB wolnego miejsca na dysku aplikacji.
+- ~25 GB wolnego miejsca na dysku aplikacji.
 
 ## Prawo
 

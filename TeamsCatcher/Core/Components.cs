@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 
 namespace TeamsCatcher.Core;
 
-public enum ComponentKind { File, Zip, OllamaModel, PythonEnv }
+public enum ComponentKind { File, Zip, OllamaModel, PythonEnv, HfModel }
 
 // Składnik pobierany u użytkownika przy pierwszym starcie (paczka ma tylko exe, ffmpeg, modele sherpa i model pyannote - bramkowany
 // licencją na Hugging Face, więc jedzie w paczce). Wersje i SHA-256 przypięte: plik o innej sumie jest odrzucany.
@@ -24,14 +24,17 @@ public static class Components
     public static string PyannoteRequirements => Path.Combine(Base, "pyannote-requirements.txt");
 
     const string Hf = "https://huggingface.co";
-    // pliki potrzebne z wydania whisper.cpp (bez narzędzi testowych); parakeet-cli jest w tym samym wydaniu (b5454 = v1.9.5)
-    const string WhisperFiles = @"^(whisper-cli\.exe|whisper\.dll|parakeet-cli\.exe|parakeet\.dll|ggml.*\.dll|cublas.*\.dll|cudart.*\.dll|nvrtc.*\.dll)$";
+    // pliki potrzebne z wydania whisper.cpp (bez narzędzi testowych), b5454 = v1.9.5
+    const string WhisperFiles = @"^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|cublas.*\.dll|cudart.*\.dll|nvrtc.*\.dll)$";
     // środowisko pyannote: uv instaluje Pythona i pakiety z pyannote-requirements.txt
     const string UvUrl = "https://github.com/astral-sh/uv/releases/download/0.12.18/uv-x86_64-pc-windows-msvc.zip";
     const string UvSha = "cae6a3bc25239f83dffb467a4b180508d9da23986c04639ebfa44e43e6a84bff";
     const string PythonVersion = "3.12.14";
     const string TorchIndex = "https://download.pytorch.org/whl/cu126";
     const long PyannoteDownload = 2_800_000_000;
+    // Qwen3-ASR-1.7B (bf16, safetensors) z Hugging Face przez huggingface_hub ze środowiska Pythona
+    const string QwenAsrRepo = "Qwen/Qwen3-ASR-1.7B";
+    const long QwenAsrSize = 4_700_000_000;
 
     public static IReadOnlyList<Component> All(Settings s)
     {
@@ -45,27 +48,32 @@ public static class Components
                 $"{Hf}/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin", "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2", s.WhisperModel),
             new("vad", "Silero VAD", "finds speech, no phantom phrases in silence", ComponentKind.File, 885_098, s.WhisperVadModel,
                 $"{Hf}/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin", "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf", s.WhisperVadModel),
-            new("turbo", "Whisper large-v3-turbo", "second hypothesis for the models' discussion", ComponentKind.File, 1_624_555_275, s.WhisperAltModel,
+            new("turbo", "Whisper large-v3-turbo", "speech version B for the notes; live transcript during a call", ComponentKind.File, 1_624_555_275, s.WhisperAltModel,
                 $"{Hf}/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin", "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69", s.WhisperAltModel),
-            new("jre", "Java 21 (Temurin JRE)", "runs LanguageTool", ComponentKind.Zip, 48_999_141, s.JavaExe,
+            new("jre", "Java 21 (Temurin JRE)", "runs LanguageTool (only for the Correct option)", ComponentKind.Zip, 48_999_141, s.JavaExe,
                 "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jre_x64_windows_hotspot_21.0.12.1_1.zip",
                 "d35f31e712f0fcf6ac5a093edc90204fbff22f720ba3950bd09d331d5e621636", Path.GetDirectoryName(Path.GetDirectoryName(s.JavaExe)!)!, "jdk-21.0.12.1+1-jre/"),
-            new("languagetool", "LanguageTool 6.6", "spelling and grammar check", ComponentKind.Zip, 251_998_221, Path.Combine(s.LanguageToolDir, "languagetool-server.jar"),
+            new("languagetool", "LanguageTool 6.6", "spelling and grammar check (only for the Correct option)", ComponentKind.Zip, 251_998_221, Path.Combine(s.LanguageToolDir, "languagetool-server.jar"),
                 "https://languagetool.org/download/LanguageTool-6.6.zip", "53600506b399bb5ffe1e4c8dec794fd378212f14aaf38ccef9b6f89314d11631", s.LanguageToolDir, "LanguageTool-6.6/"),
             new("ollama", "Ollama 0.40.6 (portable)", "runs the text models locally; skipped when Ollama is already installed", ComponentKind.Zip, 1_471_164_488, OllamaExe,
                 "https://github.com/ollama/ollama/releases/download/v0.40.6/ollama-windows-amd64.zip",
                 "e359637575302f288d76c0007c408a4be9c7376d59c4f28684d63b232a44b427", Path.Combine(Base, OllamaDir)),
-            new("writer", $"Text model {s.CorrectionModel}", "writes corrections, notes and translations", ComponentKind.OllamaModel,
-                s.CorrectionModel == "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0" ? 2_700_000_000 : 0, "", s.CorrectionModel),
-            new("checker", $"Text model {s.CheckModel}", "checks the writer (cross-check)", ComponentKind.OllamaModel,
-                s.CheckModel == "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0" ? 1_600_000_000 : 0, "", s.CheckModel),
+            new("notes", $"Text model {s.NotesModel}", "writes the meeting notes in Polish and English from 3 speech versions", ComponentKind.OllamaModel,
+                s.NotesModel == "hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M" ? 3_000_000_000 : 0, "", s.NotesModel),
         ];
-        // model notatki (krok 4) osobno tylko, gdy to nie piszący albo sprawdzający
-        if (s.NotesModel != s.CorrectionModel && s.NotesModel != s.CheckModel)
-            list.Add(new("notes", $"Text model {s.NotesModel}", "writes English meeting notes (step 4)", ComponentKind.OllamaModel, 0, "", s.NotesModel));
+        // korekta (opcja Correct): piszący i sprawdzający, jeśli to inne modele niż model notatki
+        foreach (var (id, model, purpose, size) in new[]
+        {
+            ("writer", s.CorrectionModel, "Correct option: proposes fixes of unsure sentences", s.CorrectionModel == "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0" ? 2_700_000_000L : 0),
+            ("checker", s.CheckModel, "Correct option: checks the writer", s.CheckModel == "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0" ? 1_600_000_000L : 0),
+        })
+            if (list.All(c => c.Url != model)) list.Add(new(id, $"Text model {model}", purpose, ComponentKind.OllamaModel, size, "", model));
         list.AddRange([
-            new("pyannote", "pyannote speaker separation (Python + PyTorch CUDA)", "tells the other participants apart on the GPU; without it: slower CPU method",
+            new("pyannote", "Python + PyTorch CUDA (pyannote, Qwen3-ASR)", "tells the other participants apart on the GPU and runs speech version C",
                 ComponentKind.PythonEnv, PyannoteDownload, s.PyannotePython, Target: Path.GetDirectoryName(s.PyannotePython)!),
+            // po środowisku Pythona (pobiera nim)
+            new("qwen3-asr", "Qwen3-ASR-1.7B", "speech version C for the notes (Alibaba, Polish and English)", ComponentKind.HfModel, QwenAsrSize,
+                Path.Combine(s.QwenAsrModel, "config.json"), QwenAsrRepo, Target: s.QwenAsrModel),
         ]);
         return list;
     }
@@ -78,7 +86,6 @@ public static class Components
         {
             { Id: "ollama" } => models == null && !File.Exists(c.Marker),
             { Kind: ComponentKind.OllamaModel } => models == null || !models.Contains(c.Url),
-            { Id: "whisper" } => !File.Exists(c.Marker) || !File.Exists(Path.Combine(c.Target, "parakeet-cli.exe")),
             _ => !File.Exists(c.Marker),
         }).ToList();
     }
@@ -106,6 +113,9 @@ public static class Components
                 break;
             case ComponentKind.PythonEnv:
                 await InstallPythonEnvAsync(c.Target, progress, ct);
+                break;
+            case ComponentKind.HfModel:
+                await DownloadHfModelAsync(c, s, progress, ct);
                 break;
         }
     }
@@ -279,6 +289,35 @@ public static class Components
             Directory.Delete(work, true);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    // Model z Hugging Face do folderu (snapshot_download środowiskiem Pythona); postęp = rozmiar folderu.
+    static async Task DownloadHfModelAsync(Component c, Settings s, Action<string, long, long> progress, CancellationToken ct)
+    {
+        if (!File.Exists(s.PyannotePython)) throw new InvalidOperationException("Install the Python environment first (pyannote).");
+        Directory.CreateDirectory(c.Target);
+        using var watch = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var watcher = Task.Run(async () =>
+        {
+            while (!watch.Token.IsCancellationRequested)
+            {
+                long size = 0;
+                try { size = new DirectoryInfo(c.Target).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length); }
+                catch (IOException) { }
+                progress("Downloading...", Math.Min(size, c.Size), c.Size);
+                await Task.Delay(2000, watch.Token).ContinueWith(_ => { });
+            }
+        });
+        try
+        {
+            await RunAsync(s.PyannotePython, $"-c \"from huggingface_hub import snapshot_download; snapshot_download('{c.Url}', local_dir=r'{c.Target}')\"",
+                new Dictionary<string, string> { ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1" }, (_, _, _) => { }, ct);
+        }
+        finally
+        {
+            watch.Cancel();
+            await watcher;
+        }
     }
 
     static async Task RunAsync(string exe, string args, Dictionary<string, string> env, Action<string, long, long> progress, CancellationToken ct)
