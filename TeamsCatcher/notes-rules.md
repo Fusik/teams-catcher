@@ -1,9 +1,9 @@
 <!--
-Zasady notatek ze spotkania - instrukcja dla modeli (piszącego i sprawdzającego).
-Ten plik trafia do każdego zapytania o notatkę (listy punktów, kontrola, poprawki), w każdym języku notatki.
+Zasady notatek ze spotkania - instrukcja dla modelu piszącego.
+Ten plik trafia do zapytań piszącego (listy punktów, poprawki, podsumowanie), w każdym języku notatki; sprawdzający dostaje tylko transkrypcję.
 Edycja: zakładka MODELS w aplikacji albo dowolny edytor; zmiana działa od następnej notatki
 (stare nagranie: wybierz je i kliknij "Redo after clarification").
-Komentarze w <!-- --> modele pomijają. Pisz krótko: dłuższy plik = wolniejsze notatki (limit 6000 znaków).
+Ten blok komentarza modele pomijają. Pisz dokładnie zwracaj uwage na szczegóły.
 -->
 # Zasady notatek
 
@@ -11,11 +11,17 @@ Komentarze w <!-- --> modele pomijają. Pisz krótko: dłuższy plik = wolniejsz
 - Tylko to, co padło w rozmowie. Bez domysłów, ocen i wiedzy spoza rozmowy.
 - Jeden punkt = jedna myśl, jedno krótkie pełne zdanie.
 - Nazwy, liczby, daty, kwoty i jednostki dokładnie tak, jak padły.
-- Bez cytatów i bez opisywania, kto co powiedział - chyba że to część decyzji albo zadania.
+- Możesz cytowac bezposrednio.
+- Możesz zapisywać, co zostało powiedziane.
 - Brak treści dla sekcji = "brak". Nie szukaj na siłę.
+- Dopisuj sygnatury czasowe, co zostało kiedy powiedziane.
+- Staraj sie zapełnić opisem cała sygnaturę czasową
 
 ## Podsumowanie (główny sens)
-- O czym była rozmowa i do czego doprowadziła, w 1-5 punktach.
+- O czym była rozmowa i do czego doprowadziła, w 5-10 punktach.
+
+## Przebieg rozmowy
+- Każde ~5 minut rozmowy: 3-6 punktów z czasem wypowiedzi, z konkretami (kto, co, nazwy, liczby, powody).
 
 ## Założenia
 - Rzeczy przyjęte przez uczestników za pewne i będące podstawą dalszych ustaleń (warunki, ograniczenia, dane wejściowe).

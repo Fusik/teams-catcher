@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 
 namespace TeamsCatcher.Core;
@@ -95,6 +95,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         if (Session != null && ++_ticks % 5 == 0) Session.AddTeamsAudio(TeamsProcesses.AudioPids(settings.TeamsProcess));
         if (Session != null && _ticks % 10 == 0) Session.SaveInfo();
         if (Session != null) ScheduleLiveChunk(Session);
+        if (Session != null && settings.LiveTranscript) _liveText?.Schedule(Session, _stopping);
         if (Session != null && _ticks % 60 == 0 && !RecordingSession.HasFreeSpace(settings.OutputFolder, settings.MinFreeBytes))
         {
             log("Low disk space, recording stopped.");
@@ -120,6 +121,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         var window = windows.FirstOrDefault(w => w.Handle == _watcher.CallWindow) ?? TeamsWindowFinder.PickLargest(windows);
         _loggedMuted = false;
         (_liveIndex, _liveFrom, _liveCut) = (0, 0, null);
+        _liveText = new LiveTranscript(settings, ffmpeg, log);
         Session = RecordingSession.Start(settings, ffmpeg, TeamsProcesses.AudioPids(settings.TeamsProcess), window, () => _watcher.Muted, log);
     }
 
@@ -130,6 +132,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         Finalizing = true;
         // trwający zrzut kawałka korzysta z plików sesji - najpierw on
         if (_liveCut != null) await _liveCut;
+        if (_liveText != null) await _liveText.Completion;
         try { await s.StopAsync(); }
         finally { Finalizing = false; }
         if (!settings.AutoTranscribe || !File.Exists(Path.Combine(s.Folder, RecordingSession.TranscriptWav))) return;
@@ -141,11 +144,15 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
     public event Action<string, string, string>? PartialNotesReady;
 
     // Transkrypcja w tle, po jednej naraz (GPU), nie blokuje wykrywania kolejnej rozmowy.
-    // fromState: przeliczenie po objaśnieniu niejasnych słów (bez ponownego Whispera i diaryzacji).
-    public void QueueTranscription(string folder, bool fromState = false, Transcriber.Mode mode = Transcriber.Mode.Full) =>
-        QueueJob(folder, async () =>
+    // Kroki po nagraniu / imporcie: transkrypcja + zaznaczone w opcjach.
+    Transcriber.Steps AutoSteps => Transcriber.Steps.Transcribe | (settings.CorrectTranscript ? Transcriber.Steps.Correct : 0)
+        | (settings.WriteNotes ? Transcriber.Steps.Notes : 0);
+
+    // steps: null = kroki z opcji (po nagraniu); "Save and recalculate" podaje Correct. false = to zadanie już czeka albo trwa.
+    public bool QueueTranscription(string folder, Transcriber.Steps? steps = null, Transcriber.Mode mode = Transcriber.Mode.Full) =>
+        QueueJob(folder, mode == Transcriber.Mode.Full ? (steps ?? AutoSteps).ToString() : mode.ToString(), async () =>
         {
-            var notes = await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, fromState, mode);
+            var notes = await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, steps ?? AutoSteps, mode);
             if (notes != null) PartialNotesReady?.Invoke(PartialTitle(folder), notes, NotesFile(folder));
         });
 
@@ -163,24 +170,35 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         File.WriteAllText(Path.Combine(folder, RecordingSession.InfoJson), System.Text.Json.JsonSerializer.Serialize(
             new SessionInfo { Finalized = true, Started = DateTime.Now, Ended = DateTime.Now, Title = file }));
         log($"Video file queued for transcription: {Path.GetFileName(file)}");
-        QueueJob(folder, async () =>
+        QueueJob(folder, AutoSteps.ToString(), async () =>
         {
             var wav = Path.Combine(folder, RecordingSession.TranscriptWav);
             await Transcriber.RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{file}\" -vn -ac 1 -ar 16000 -c:a pcm_s16le \"{wav}\"", folder, _stopping);
-            await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping);
+            await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, AutoSteps);
         });
     }
 
     // Folder analizowany teraz (nagranie albo kawałek live\NN); null = kolejka pusta.
     public string? CurrentJob { get; private set; }
 
-    void QueueJob(string folder, Func<Task> job)
+    // Zlecone i trwające zadania (folder + krok): ten sam krok kliknięty drugi raz, gdy już czeka albo trwa, nie liczy się dwa razy
+    // (np. "Save and recalculate" kliknięte dwa razy).
+    readonly HashSet<string> _queued = [];
+
+    bool QueueJob(string folder, string step, Func<Task> job)
     {
         if (Transcriber.MissingFiles(settings) is { } missing)
         {
             log($"Transcription skipped, file not found: {missing} - download the components (tray menu: Components...), then Transcribe again.");
-            return;
+            return false;
         }
+        var key = $"{folder}|{step}";
+        lock (_queued)
+            if (!_queued.Add(key))
+            {
+                log($"{step} is already queued or running: {Path.GetFileName(folder)}");
+                return false;
+            }
         Interlocked.Increment(ref _transcribing);
         _ = Task.Run(async () =>
         {
@@ -189,11 +207,11 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
                 await _transcribeGate.WaitAsync(_stopping);
                 try
                 {
-                    log($"Transcribing: {Path.GetRelativePath(settings.OutputFolder, folder)}");
+                    log($"{step}: {Path.GetRelativePath(settings.OutputFolder, folder)}");
                     CurrentJob = folder;
                     var clock = Stopwatch.StartNew();
                     await job();
-                    log($"Transcript saved in {clock.Elapsed:mm\\:ss}: {Path.Combine(folder, Transcriber.TranscriptTxt)}");
+                    log($"{step} finished in {clock.Elapsed:mm\\:ss}: {folder}");
                 }
                 finally
                 {
@@ -203,8 +221,13 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
             }
             catch (OperationCanceledException) { }
             catch (Exception e) { log($"Transcription failed: {e.Message}"); }
-            finally { Interlocked.Decrement(ref _transcribing); }
+            finally
+            {
+                lock (_queued) _queued.Remove(key);
+                Interlocked.Decrement(ref _transcribing);
+            }
         });
+        return true;
     }
 
     static string NotesFile(string folder) => Directory.GetFiles(folder, "notes.*.md").FirstOrDefault() ?? Path.Combine(folder, MeetingNotes.FileName("pl"));
@@ -219,6 +242,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
     int _liveIndex;
     double _liveFrom;
     Task? _liveCut;
+    LiveTranscript? _liveText;
 
     double ChunkSeconds => settings.LiveChunkMinutes * 60.0;
 
@@ -255,7 +279,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
     }
 
     // Po rozmowie z kawałkami: ostatni kawałek (do końca nagrania) i złożenie całości; bez kompletu kawałków - całość jak zwykle.
-    void QueueFinish(string folder) => QueueJob(folder, async () =>
+    void QueueFinish(string folder) => QueueJob(folder, Transcriber.Mode.Assemble.ToString(), async () =>
     {
         var chunks = LiveChunks.List(folder);
         var info = System.Text.Json.JsonSerializer.Deserialize<SessionInfo>(await File.ReadAllTextAsync(Path.Combine(folder, RecordingSession.InfoJson), _stopping));
@@ -270,7 +294,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
                 if (notes != null) PartialNotesReady?.Invoke(PartialTitle(rest), notes, NotesFile(rest));
             }
         }
-        try { await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, mode: Transcriber.Mode.Assemble); }
+        try { await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, AutoSteps, Transcriber.Mode.Assemble); }
         catch (InvalidDataException e)
         {
             log($"Live chunks incomplete ({e.Message}) - transcribing the whole recording.");

@@ -378,6 +378,22 @@ public sealed class IntegrationTests : IDisposable
         return 10 * Math.Log10((s1 * s1 + s2 * s2 - coeff * s1 * s2) / Math.Max(n, 1) + 1e-12);
     }
 
+    // Jeden krok nagrania na kopii folderu: TC_STEP_FOLDER, TC_STEP (np. Correct), TC_NOTES_SETTINGS, opcjonalnie TC_WRITER / TC_CHECKER
+    // (inne modele niż w ustawieniach); log w folderze (step-test.log).
+    [Fact]
+    public async Task One_step_on_a_recording_copy()
+    {
+        var folder = Environment.GetEnvironmentVariable("TC_STEP_FOLDER");
+        if (folder == null) return;
+        var logFile = Path.Combine(folder, "step-test.log");
+        void Log(string line) => File.AppendAllText(logFile, $"{DateTime.Now:HH:mm:ss} {line}\n");
+        var settings = Settings.Load(Environment.GetEnvironmentVariable("TC_NOTES_SETTINGS")!, Log);
+        if (Environment.GetEnvironmentVariable("TC_WRITER") is { Length: > 0 } writer) settings.CorrectionModel = writer;
+        if (Environment.GetEnvironmentVariable("TC_CHECKER") is { Length: > 0 } checker) settings.CheckModel = checker;
+        Ollama.Log = Log;
+        await Transcriber.RunAsync(folder, settings, "ffmpeg", Log, CancellationToken.None, Enum.Parse<Transcriber.Steps>(Environment.GetEnvironmentVariable("TC_STEP")!));
+    }
+
     sealed class ColorComparer(int tolerance) : IEqualityComparer<(int, int, int)>
     {
         public bool Equals((int, int, int) a, (int, int, int) b) =>

@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace TeamsCatcher.Core;
@@ -7,7 +7,7 @@ namespace TeamsCatcher.Core;
 public sealed record HypothesisWord(string Source, string Speaker, long FromMs, long ToMs, string Text);
 
 // Dyskusja modeli o spornych zdaniach, aż się zgodzą (najwyżej DebateRounds rund):
-// głosy: 3 rozpoznawania mowy (A = Whisper large-v3, B = Whisper turbo, C = Parakeet) + LanguageTool (pisownia, gramatyka)
+// głosy: 3 rozpoznawania mowy (A = Whisper large-v3, B = Whisper turbo, C = Qwen3-ASR) + LanguageTool (pisownia, gramatyka)
 // + 2 modele tekstu: CorrectionModel (Llama) proponuje i odpowiada, CheckModel (Qwen) recenzuje.
 // Jednostka = całe zdanie (segmenty Whispera tną zdania w połowie - B i C rozjeżdżały się z fragmentami).
 // Sporne = rozpoznawania się różnią albo LanguageTool zgłasza błąd. Jedno zdanie = jedno zapytanie (w paczkach 4B model
@@ -64,7 +64,7 @@ public static class Debate
 
         // 2. kontrola sensu i sporne zdania
         AttachEnglish(units, heard, notes);
-        // C (Parakeet, najsłabszy) różni się prawie zawsze - sama ta różnica nie wywołuje sporu, zostaje dowodem (TVN: 16/16 zdań spornych)
+        // C (dawniej Parakeet, najsłabszy) różni się prawie zawsze - sama ta różnica nie wywołuje sporu, zostaje dowodem (TVN: 16/16 zdań spornych)
         var disputed = units.Where(u => u.Issues.Count > 0 || (u.Alternatives.FirstOrDefault() is { } b && !SameWords(b, u.Original))).ToList();
         var topic = await TranscriptLlm.TopicAsync(result, s, ct);
         log($"Topic: {topic}");
@@ -78,7 +78,7 @@ public static class Debate
             if (u.Proposal == u.Original && u.Issues.Count == 0) u.Final = u.Original;
         }
         WriteModelNotes(notes, s, disputed, $"runda 1/{s.DebateRounds}: propozycje gotowe");
-        log($"  step: debate proposals ({disputed.Count} sentences, Llama)");
+        log($"  step: debate proposals ({disputed.Count} sentences, {s.CorrectionModel})");
 
         // 4. recenzja (model kontrolny) <-> odpowiedź (model korekty), aż się zgodzą
         for (var round = 1; round <= s.DebateRounds; round++)
@@ -108,7 +108,7 @@ public static class Debate
                 }
             }
             WriteModelNotes(notes, s, disputed, $"runda {round}/{s.DebateRounds}: odpowiedź gotowa, otwartych {disputed.Count(u => u.Final == null)}");
-            log($"  step: debate round {round} answer ({open.Count} sentences, Llama)");
+            log($"  step: debate round {round} answer ({open.Count} sentences, {s.CorrectionModel})");
         }
 
         // 5. brak zgody: słowa, w których się różnią, oznaczone ??tak??
@@ -220,7 +220,7 @@ public static class Debate
     }
 
     static async Task<string> Ask(string prompt, string model, Settings s, CancellationToken ct) =>
-        CleanAnswer(await Ollama.GenerateAsync(prompt, model, s, ct, 4096, 300));
+        CleanAnswer(await Ollama.GenerateAsync(prompt, model, s, ct, 300));
 
     // Małe modele dodają Markdown, cudzysłowy i komentarze: liczy się pierwsza niepusta linia.
     public static string CleanAnswer(string answer)

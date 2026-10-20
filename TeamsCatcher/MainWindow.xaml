@@ -1,4 +1,4 @@
-﻿<Window x:Class="TeamsCatcher.MainWindow"
+<Window x:Class="TeamsCatcher.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:TeamsCatcher.Controls"
@@ -134,18 +134,61 @@
             <GroupBox.Header>
                 <StackPanel Orientation="Horizontal">
                     <controls:WfIcon Kind="plik" />
-                    <TextBlock Text="NOTES" Margin="8,0,0,0" />
+                    <TextBlock Text="RESULT" Margin="8,0,0,0" />
                 </StackPanel>
             </GroupBox.Header>
             <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Text="{Binding SelectedRecording.Name}" Style="{StaticResource Value}" Foreground="{StaticResource WF.Brush.Cyan}"
-                           ToolTip="{Binding SelectedRecording.Folder}" Margin="0,0,0,6" />
-                <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0" LastChildFill="False">
-                    <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Command="{Binding RedoCommand}"
-                            ToolTip="Save the explanations from TO CLARIFY to the knowledge base and analyse this recording again with that context (models' discussion, translation, notes; speech recognition is reused)">
-                        <TextBlock Text="Redo after clarification" />
+                <!-- Wybór nagrania: nad wynikami, które pokazuje -->
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <Button AutomationProperties.Name="Open recording folder" DockPanel.Dock="Right" Margin="8,0,0,0" Style="{StaticResource App.Button.Secondary}" Padding="10,4"
+                            Command="{Binding OpenRecordingCommand}" CommandParameter="{Binding SelectedRecording}" ToolTip="Open the recording folder">
+                        <controls:WfIcon Kind="folder" />
                     </Button>
-                    <Button DockPanel.Dock="Left" Style="{StaticResource App.Button.Secondary}" Padding="10,4" Command="{Binding OpenNotesCommand}" ToolTip="Open the notes file">
+                    <ToggleButton AutomationProperties.Name="Choose a recording" x:Name="RecordingToggle" Padding="10,4" HorizontalContentAlignment="Stretch" Foreground="{StaticResource WF.Brush.Ink}"
+                                  Background="{StaticResource WF.Brush.Field}" BorderBrush="{StaticResource WF.Brush.Blue300}" ToolTip="Choose a recording">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="▾" Margin="8,0,0,0" />
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedRecording.Details}" Foreground="{StaticResource WF.Brush.Slate}" Margin="16,0,0,0" />
+                            <TextBlock Text="{Binding SelectedRecording.Name, FallbackValue='(no recordings)'}" TextTrimming="CharacterEllipsis" />
+                        </DockPanel>
+                    </ToggleButton>
+                    <Popup IsOpen="{Binding IsChecked, ElementName=RecordingToggle, Mode=TwoWay}" PlacementTarget="{Binding ElementName=RecordingToggle}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True" Width="{Binding ActualWidth, ElementName=RecordingToggle}">
+                        <ListBox x:Name="RecordingList" ItemsSource="{Binding Recordings}" SelectionChanged="RecordingList_SelectionChanged" MaxHeight="320">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding Details}" Foreground="{StaticResource WF.Brush.Slate}" Margin="16,0,0,0" />
+                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                        </ListBox>
+                    </Popup>
+                </DockPanel>
+                <!-- notatka PL / EN, transkrypcja, 3 rozpoznania mowy (A/B/C) - tylko te, które już są -->
+                <ListBox DockPanel.Dock="Top" ItemsSource="{Binding ResultViews}" SelectedItem="{Binding ResultView}" Margin="0,0,0,6"
+                         BorderThickness="0" Background="Transparent" AutomationProperties.Name="Result view"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <Setter Property="Padding" Value="8,3" />
+                            <Setter Property="Margin" Value="0,0,4,4" />
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+                <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0" LastChildFill="False">
+                    <Button DockPanel.Dock="Left" Style="{StaticResource App.Button.Secondary}" Padding="10,4" Command="{Binding OpenNotesCommand}" ToolTip="Open the shown file">
                         <TextBlock Text="Open" />
                     </Button>
                 </DockPanel>
@@ -236,13 +279,16 @@
                         <CheckBox IsChecked="{Binding RecordMicrophone}" Content="Record my microphone" Margin="0,0,20,0" />
                         <CheckBox IsChecked="{Binding RecordVideo}" Content="Video" Margin="0,0,8,0"
                                   ToolTip="Record the Teams window. Off = audio only (meeting.mp4 with sound, still enough for the transcript)" />
-                        <CheckBox IsChecked="{Binding AutoTranscribe}" Content="Transcript" Margin="0,0,8,0" />
+                        <CheckBox IsChecked="{Binding AutoTranscribe}" Content="Transcript" Margin="0,0,8,0"
+                                  ToolTip="After a call or a video import: transcript and speakers (Whisper + pyannote), then the steps ticked next to it." />
+                        <CheckBox IsChecked="{Binding CorrectTranscript}" Content="Correct" Margin="0,0,8,0"
+                                  ToolTip="Automatically after the transcript: models discuss unsure sentences using 3 speech recognitions and list words TO CLARIFY. Improves the transcript text; slowest step." />
+                        <CheckBox IsChecked="{Binding WriteNotes}" Content="Notes" Margin="0,0,8,0"
+                                  ToolTip="Automatically after the transcript: notes in Polish and English from 3 speech recognitions (one local model)." />
+                        <CheckBox IsChecked="{Binding LiveTranscript}" Content="Live transcript" Margin="0,0,8,0"
+                                  ToolTip="During a call: transcript every ~30 s (Whisper large-v3-turbo) in RESULT - Live. After the call the full transcript is made as usual." />
                         <CheckBox IsChecked="{Binding LiveNotes}" Content="Live notes" Margin="0,0,8,0"
                                   ToolTip="Every 5 minutes of a call: transcript and a partial note (main point, assumptions, conclusions, remarks, agreements) in a tray popup. After the call the result is assembled from the parts - ready sooner." />
-                        <CheckBox IsChecked="{Binding WriteNotes}" Content="Meeting notes" Margin="0,0,8,0"
-                                  ToolTip="Summary, decisions, action items and open questions in Polish and English (local model in Ollama)" />
-                        <CheckBox IsChecked="{Binding TranslateTranscript}" Content="Translate PL/EN" Margin="0,0,8,0"
-                                  ToolTip="Detects the language of the conversation and adds a Polish / English translation (local model in Ollama)" />
                         <TextBlock Style="{StaticResource Label}" Text="OTHERS" Margin="0,0,6,0" />
                         <ToggleButton AutomationProperties.Name="Speakers on the Teams side" x:Name="SpeakersToggle" Padding="10,3" Margin="0,0,20,0" Foreground="{StaticResource WF.Brush.Blue100}" Background="#332F7BFF"
                                       BorderBrush="{StaticResource WF.Brush.Blue300}" ToolTip="Number of speakers on the Teams side (without you). Set it when you know it - the split is exact; auto guesses from voice similarity.">
@@ -290,17 +336,17 @@
                         </Button>
                         <TextBlock Text="or drop files here" HorizontalAlignment="Center" Margin="0,8,0,0" Foreground="{StaticResource WF.Brush.Slate}" />
                         <TextBlock TextWrapping="Wrap" MaxWidth="560" TextAlignment="Center" Margin="0,12,0,0" FontSize="12" Foreground="{StaticResource WF.Brush.Mute}"
-                                   Text="Any recording (mp4, mkv, mov, mp3, wav...). Speakers are told apart by voice; transcript, translation and notes follow the settings on the Teams calls tab. The result appears in Recent recordings, the original file stays where it is." />
+                                   Text="Any recording (mp4, mkv, mov, mp3, wav...). Speakers are told apart by voice; the steps after the transcript follow the options on the Teams calls tab. The result appears in RECORDING below, the original file stays where it is." />
                     </StackPanel>
                 </Border>
             </TabItem>
 
             <!-- Wszystko, co zmienia pracę modeli tekstu: zasady notatek, modele, rundy, język, baza wiedzy (słowniczek: TEAMS CALLS) -->
             <TabItem Header="MODELS">
-                <Grid Height="300">
+                <Grid Height="340">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="3*" />
-                        <ColumnDefinition Width="2*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <GroupBox Grid.Column="0" Margin="0,0,8,0">
                         <GroupBox.Header>
@@ -351,16 +397,77 @@
                                     </Popup>
                                 </StackPanel>
                             </Grid>
-                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Text="KNOWLEDGE BASE  ·  [term - other spelling - meaning], [misheard - =correct]" Margin="0,8,0,4"
-                                       TextTrimming="CharacterEllipsis" ToolTip="Explanations the models use to understand terms; one entry per line. Same file as TO CLARIFY saves to." />
+                            <DockPanel DockPanel.Dock="Top" Margin="0,8,0,4">
+                                <TextBlock DockPanel.Dock="Left" Style="{StaticResource Label}" Text="KNOWLEDGE BASE" Margin="0,0,8,0"
+                                           ToolTip="Explanations the models use to understand terms. Only entries that occur in the analysed fragment are sent to the models, so a large base does not slow them down. Misheard word: meaning = &quot;=correct&quot; (e.g. term diamentowy, other spelling Jamentowy, meaning =diamentowy)." />
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding KnowledgeCount}" Style="{StaticResource Label}" Margin="8,0,0,0" ToolTip="shown / all entries" />
+                                <TextBox Text="{Binding KnowledgeSearch, UpdateSourceTrigger=PropertyChanged}" Padding="6,2" AutomationProperties.Name="Search knowledge base"
+                                         ToolTip="Search in terms, other spellings and meanings" />
+                            </DockPanel>
                             <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                                <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Margin="8,0,0,0" Command="{Binding SaveKnowledgeTextCommand}" Content="Save knowledge" />
+                                <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Margin="8,0,0,0" Command="{Binding SaveKnowledgeTextCommand}" Content="Save knowledge"
+                                        ToolTip="Save the whole table (also rows hidden by the search). Empty last row = new entry; select a row and press Delete to remove it." />
                                 <TextBlock Text="{Binding ModelsStatus}" VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}" TextWrapping="Wrap" />
                             </DockPanel>
-                            <TextBox Text="{Binding KnowledgeText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap" VerticalContentAlignment="Top"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" Padding="6,4"
-                                     AutomationProperties.Name="Knowledge base" />
+                            <DataGrid ItemsSource="{Binding KnowledgeView}" AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True" HeadersVisibility="Column"
+                                      ColumnHeaderStyle="{StaticResource App.DataGridHeader}" RowHeight="24" ColumnWidth="*" Background="{StaticResource WF.Brush.Field}" Foreground="{StaticResource WF.Brush.Ink}"
+                                      RowBackground="Transparent" AlternatingRowBackground="{StaticResource WF.Brush.Navy700}" BorderBrush="{StaticResource WF.Brush.Rim}"
+                                      GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource WF.Brush.Line}" FontSize="12"
+                                      AutomationProperties.Name="Knowledge base">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="TERM" Binding="{Binding Term}" Width="2*" MinWidth="90" />
+                                    <DataGridTextColumn Header="SPELLINGS" Binding="{Binding Spellings}" Width="2*" MinWidth="90" />
+                                    <DataGridTextColumn Header="MEANING" Binding="{Binding Meaning}" Width="3*" MinWidth="120" />
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </DockPanel>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+
+            <!-- Notatka przez Copilota: prompt (notes-style.md + transkrypcja wybranego nagrania) i odpowiedź przez schowek -->
+            <TabItem Header="COPILOT">
+                <Grid Height="340">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <GroupBox Grid.Column="0" Margin="0,0,8,0">
+                        <GroupBox.Header>
+                            <TextBlock Text="NOTE STYLE  ·  notes-style.md" ToolTip="What the note must contain and how it looks. Sent to Copilot with the transcript." />
+                        </GroupBox.Header>
+                        <DockPanel>
+                            <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" LastChildFill="False">
+                                <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Command="{Binding SaveStyleCommand}" Content="Save style" />
+                                <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="10,4" Margin="0,0,8,0" Command="{Binding OpenStyleCommand}" Content="Open file" />
+                            </DockPanel>
+                            <TextBox Text="{Binding NotesStyle, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                     VerticalScrollBarVisibility="Auto" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" Padding="6,4"
+                                     AutomationProperties.Name="Note style" />
+                        </DockPanel>
+                    </GroupBox>
+                    <GroupBox Grid.Column="1" Margin="0">
+                        <GroupBox.Header>
+                            <TextBlock Text="NOTE FROM COPILOT" ToolTip="The app sends nothing: you paste the prompt in Copilot yourself and copy its answer back." />
+                        </GroupBox.Header>
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource Label}" Text="1. COPY THE PROMPT" />
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,10">
+                                <Button Style="{StaticResource WF.Button.Primary}" Padding="10,4" Command="{Binding CopyPromptCommand}" CommandParameter="text" Content="Prompt with transcript"
+                                        ToolTip="Note style + whole transcript in one text (Ctrl+V in Copilot)" />
+                                <Button Style="{StaticResource App.Button.Secondary}" Padding="10,4" Margin="8,0,0,0" Command="{Binding CopyPromptCommand}" CommandParameter="file" Content="Prompt + file"
+                                        ToolTip="Long meeting: prompt only; Explorer shows the transcript file - drag it into the Copilot chat" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource Label}" Text="2. PASTE IT IN COPILOT" />
+                            <DockPanel Margin="0,4,0,10">
+                                <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="10,4" Margin="8,0,0,0" Command="{Binding OpenCopilotCommand}" Content="Open Copilot" />
+                                <TextBox Text="{Binding CopilotUrl, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Copilot address" ToolTip="Copilot address (work: m365.cloud.microsoft/chat, private: copilot.microsoft.com)" />
+                            </DockPanel>
+                            <TextBlock Style="{StaticResource Label}" Text="3. COPY COPILOT'S ANSWER, THEN" />
+                            <Button Style="{StaticResource WF.Button.Primary}" Padding="10,4" Margin="0,4,0,10" HorizontalAlignment="Left" Command="{Binding PasteNoteCommand}" Content="Paste note from clipboard"
+                                    ToolTip="Saves the clipboard as notes-copilot.md of the selected recording (local notes stay); shown in RESULT - Copilot" />
+                            <TextBlock Text="{Binding CopilotStatus}" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}" TextWrapping="Wrap" />
+                        </StackPanel>
                     </GroupBox>
                 </Grid>
             </TabItem>
@@ -375,47 +482,24 @@
                     </StackPanel>
                 </GroupBox.Header>
                 <DockPanel>
-                <!-- Wybór nagrania (lista rozwijana) + co jest teraz analizowane -->
-                <DockPanel DockPanel.Dock="Top">
-                    <Button AutomationProperties.Name="Transcribe again" DockPanel.Dock="Right" Margin="8,0,0,0" Style="{StaticResource App.Button.Secondary}" Padding="10,4"
-                            Command="{Binding TranscribeCommand}" CommandParameter="{Binding SelectedRecording}"
-                            ToolTip="Transcribe the selected recording from scratch (Whisper, speakers, discussion, notes)">
-                        <StackPanel Orientation="Horizontal">
-                            <controls:WfIcon Kind="plik" />
-                            <TextBlock Text="Transcribe again" Margin="8,0,0,0" />
-                        </StackPanel>
-                    </Button>
-                    <Button AutomationProperties.Name="Open recording folder" DockPanel.Dock="Right" Margin="8,0,0,0" Style="{StaticResource App.Button.Secondary}" Padding="10,4"
-                            Command="{Binding OpenRecordingCommand}" CommandParameter="{Binding SelectedRecording}" ToolTip="Open the recording folder">
-                        <controls:WfIcon Kind="folder" />
-                    </Button>
-                    <ToggleButton AutomationProperties.Name="Choose a recording" x:Name="RecordingToggle" Padding="10,4" HorizontalContentAlignment="Stretch" Foreground="{StaticResource WF.Brush.Ink}"
-                                  Background="{StaticResource WF.Brush.Field}" BorderBrush="{StaticResource WF.Brush.Blue300}" ToolTip="Choose a recording">
-                        <DockPanel>
-                            <TextBlock DockPanel.Dock="Right" Text="▾" Margin="8,0,0,0" />
-                            <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedRecording.Details}" Foreground="{StaticResource WF.Brush.Slate}" Margin="16,0,0,0" />
-                            <TextBlock Text="{Binding SelectedRecording.Name, FallbackValue='(no recordings)'}" TextTrimming="CharacterEllipsis" />
-                        </DockPanel>
-                    </ToggleButton>
-                    <Popup IsOpen="{Binding IsChecked, ElementName=RecordingToggle, Mode=TwoWay}" PlacementTarget="{Binding ElementName=RecordingToggle}"
-                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True" Width="{Binding ActualWidth, ElementName=RecordingToggle}">
-                        <ListBox x:Name="RecordingList" ItemsSource="{Binding Recordings}" SelectionChanged="RecordingList_SelectionChanged" MaxHeight="320">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <DockPanel>
-                                        <TextBlock DockPanel.Dock="Right" Text="{Binding Details}" Foreground="{StaticResource WF.Brush.Slate}" Margin="16,0,0,0" />
-                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                    </DockPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                        </ListBox>
-                    </Popup>
-                </DockPanel>
+                <!-- Kroki wybranego nagrania (tylko podgląd): które policzone i ile trwały; co liczyć - opcje Transcript / Correct / Notes -->
+                <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding RecordingSteps}" Focusable="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Rows="1" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{StaticResource WF.Brush.Rim}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0" ToolTip="{Binding Tip}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Label}" />
+                                    <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{StaticResource WF.Brush.Slate}" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
                 <DockPanel DockPanel.Dock="Top" Margin="0,6,0,0">
                     <TextBlock DockPanel.Dock="Left" Style="{StaticResource Label}" Text="ANALYZING" />
                     <TextBlock Style="{StaticResource Value}" Foreground="{StaticResource WF.Brush.Warn}" ToolTip="{Binding Analyzing}"
@@ -424,7 +508,7 @@
                 <!-- Objaśnienia: zawsze widoczne (wpis zbiorczy + zapis); lista niejasnych słów wybranego nagrania, gdy jakieś są -->
                 <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
                     <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Margin="8,0,0,0"
-                            Command="{Binding SaveKnowledgeCommand}" ToolTip="Save the explanations to the knowledge base and analyse the selected recording again (discussion, translation, notes)">
+                            Command="{Binding SaveKnowledgeCommand}" ToolTip="Save the explanations to the knowledge base and run step 2. Correct again for the selected recording (models' discussion with that context)">
                         <TextBlock Text="Save and recalculate" />
                     </Button>
                     <TextBox Text="{Binding BulkKnowledge, UpdateSourceTrigger=PropertyChanged}"

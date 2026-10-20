@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using NAudio.Wave;
 using SherpaOnnx;
 
@@ -22,15 +22,18 @@ public static class Diarizer
 
     // pyannote community-1 przez Pythona (diarize.py): tury mówców na GPU, potem te same reguły przypisania co dla sherpa-onnx
     // (największe pokrycie czasowe, mówca stały w zdaniu). Bez weryfikacji odciskiem głosu - community-1 sam liczy odciski.
-    public static async Task<(List<TranscriptSegment> Segments, int Speakers)> RunPyannoteAsync(string wav, IReadOnlyList<TranscriptSegment> segments,
+    public static async Task<(List<TranscriptSegment> Segments, int Speakers, string Device)> RunPyannoteAsync(string wav, IReadOnlyList<TranscriptSegment> segments,
         Settings s, string labelPrefix, string workDir, CancellationToken ct)
     {
         var output = Path.Combine(workDir, "pyannote.json");
         try
         {
             await Transcriber.RunAsync(s.PyannotePython, $"\"{PyannoteScript}\" \"{s.PyannoteModel}\" \"{wav}\" \"{output}\" {s.DiarizationSpeakers}", workDir, ct);
-            var turns = ParsePyannote(await File.ReadAllTextAsync(output, ct));
-            return (AssignSpeakers(segments, turns, labelPrefix), turns.Select(t => t.Speaker).Distinct().Count());
+            var json = await File.ReadAllTextAsync(output, ct);
+            var turns = ParsePyannote(json);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var device = doc.RootElement.TryGetProperty("device", out var d) ? d.GetString() ?? "?" : "?";
+            return (AssignSpeakers(segments, turns, labelPrefix), turns.Select(t => t.Speaker).Distinct().Count(), device);
         }
         finally
         {

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -27,11 +28,38 @@ public partial class MainWindow : Window
         base.OnClosing(e);
     }
 
-    // Przy maksymalizacji okno bez systemowej ramki wychodzi poza ekran o szerokość ramki zmiany rozmiaru.
+    // Okno bez systemowej ramki po maksymalizacji zakrywało pasek zadań (1934x1094 przy obszarze roboczym 1920x1040) - dół (log, Open)
+    // był pod paskiem. WM_GETMINMAXINFO: maksymalny rozmiar i pozycja = obszar roboczy monitora, na którym jest okno.
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(this).Handle).AddHook(WndProc);
+    }
+
+    static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WmGetMinMaxInfo = 0x0024, MonitorDefaultToNearest = 2;
+        if (msg != WmGetMinMaxInfo) return IntPtr.Zero;
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info)) return IntPtr.Zero;
+        var mmi = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        mmi.MaxPosition = new Point32 { X = info.Work.Left - info.Monitor.Left, Y = info.Work.Top - info.Monitor.Top };
+        mmi.MaxSize = new Point32 { X = info.Work.Right - info.Work.Left, Y = info.Work.Bottom - info.Work.Top };
+        Marshal.StructureToPtr(mmi, lParam, true);
+        return IntPtr.Zero;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct Point32 { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] struct Rect32 { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct MinMaxInfo { public Point32 Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize; }
+    [StructLayout(LayoutKind.Sequential)] struct MonitorInfo { public int Size; public Rect32 Monitor, Work; public int Flags; }
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+    [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
     void UpdateWindowState()
     {
         var maximized = WindowState == WindowState.Maximized;
-        RootBorder.Margin = maximized ? SystemParameters.WindowResizeBorderThickness : new Thickness(0);
         MaxIcon.Visibility = maximized ? Visibility.Collapsed : Visibility.Visible;
         RestoreIcon.Visibility = maximized ? Visibility.Visible : Visibility.Collapsed;
     }

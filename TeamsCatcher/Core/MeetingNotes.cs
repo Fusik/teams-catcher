@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -10,13 +10,21 @@ namespace TeamsCatcher.Core;
 // odrzucony punkt wraca do piszącego, po kolejnym NIE znika. Czasy tematów i format Markdown składa kod, nie model.
 public static class MeetingNotes
 {
-    const int ChunkChars = 12000;
-    const int ContextTokens = 8192;
-    // tematy: jeden na tyle sekund rozmowy (czas = pierwsza wypowiedź okna); godzina = ~20 zapytań
-    const int TopicSeconds = 180;
-    const int MaxSummary = 7;
+    // Podsumowanie całości z przebiegu: tyle przebiegu na jedno zapytanie, ile zmieści mniejszy z kontekstów obu modeli
+    // po odjęciu zasad i odpowiedzi; ~2,5 znaku na token (polski tekst w tokenizerach Llamy/Qwena).
+    const int MinChunkChars = 4000;
+    const double CharsPerToken = 2.5;
+    const int ReservedTokens = 2000;
+
+    public static int ChunkCharsFor(int context, int extraChars) =>
+        Math.Max(MinChunkChars, (int)((context - ReservedTokens) * CharsPerToken) - extraChars);
+    // Część rozmowy = ~5 min (od pierwszej wypowiedzi): mały prompt mieści się z kontekstem na GPU, a z każdej części powstaje
+    // dokładny przebieg. Test 1,5 h (Heroes): części po ~40 min dały 6 ogólnych punktów na całą notatkę.
+    const int PartSeconds = 300;
+    const int MaxPointsPerPart = 6;
     // więcej punktów z jednej części = zmyślanie (otwarte kwestie TVN: 15 wymyślonych pytań)
-    const int MaxPerChunk = 8;
+    const int MaxPerPart = 3;
+    const int MaxSummary = 10;
 
     public enum Section { Summary, Assumptions, Conclusions, Decisions, Tasks, Open }
 
@@ -24,11 +32,16 @@ public static class MeetingNotes
     public static readonly Section[] Full = Enum.GetValues<Section>();
     public static readonly Section[] Partial = [Section.Summary, Section.Assumptions, Section.Conclusions, Section.Open, Section.Decisions];
 
-    public sealed record Notes(Dictionary<Section, List<string>> Sections, List<(string Time, string Text)> Topics);
+    // Punkt notatki z czasem wypowiedzi ("0:15:09"; pusty = bez czasu, np. podsumowanie całości).
+    public sealed record Item(string Time, string Text);
+    // Część rozmowy w przebiegu: czas początku, temat i punkty.
+    public sealed record Part(string Time, string Topic, List<Item> Points);
+    public sealed record Notes(Dictionary<Section, List<Item>> Sections, List<Part> Parts);
 
     public static string FileName(string language) => $"notes.{language}.md";
 
-    // Zasady notatek od użytkownika (notes-rules.md obok exe, edycja w zakładce MODELS): trafiają do list, kontroli i poprawek.
+    // Zasady notatek od użytkownika (notes-rules.md obok exe, edycja w zakładce MODELS): trafiają do list i poprawek. Nie do kontroli:
+    // Qwen 3.5 4B z zasadami (nagłówki Markdown) zamiast "1. TAK" pisał własną notatkę - 163 ze 165 punktów odpadło jako NIE.
     public static string RulesPath => Path.Combine(AppContext.BaseDirectory, "notes-rules.md");
     const int MaxRulesChars = 6000;
 
@@ -37,7 +50,7 @@ public static class MeetingNotes
     {
         path ??= RulesPath;
         if (!File.Exists(path)) return "";
-        var text = Regex.Replace(File.ReadAllText(path), @"<!--.*?-->", "", RegexOptions.Singleline).Trim();
+        var text = Regex.Replace(File.ReadAllText(path), @"<!--.*?-->[ \t]*(?=\r?\n|$)", "", RegexOptions.Singleline).Trim();
         return text.Length > MaxRulesChars ? text[..MaxRulesChars] : text;
     }
 
@@ -62,13 +75,11 @@ public static class MeetingNotes
     // Co model ma wypisać w każdej sekcji (w języku notatki - model trzyma się wtedy tego języka).
     static string Ask(Section section, string language) => (section, language) switch
     {
-        (Section.Summary, "pl") => "główny sens rozmowy - najważniejsze informacje (najwyżej 5 punktów)",
         (Section.Assumptions, "pl") => "założenia, które uczestnicy przyjęli w rozmowie (to, co traktują jako dane)",
         (Section.Conclusions, "pl") => "wnioski, do których doszli uczestnicy",
         (Section.Decisions, "pl") => "decyzje i ustalenia, które zapadły (tylko wyraźnie podjęte)",
         (Section.Tasks, "pl") => "zadania do zrobienia w formacie \"Osoba: zadanie (termin, jeśli padł)\"",
         (Section.Open, "pl") => "otwarte kwestie, uwagi i pytania bez odpowiedzi",
-        (Section.Summary, _) => "the main point of the conversation - the most important information (at most 5 points)",
         (Section.Assumptions, _) => "assumptions the participants made (what they take as given)",
         (Section.Conclusions, _) => "conclusions the participants reached",
         (Section.Decisions, _) => "decisions and agreements that were made (only clearly made ones)",
@@ -76,33 +87,39 @@ public static class MeetingNotes
         _ => "open issues, remarks and unanswered questions",
     };
 
-    sealed record Candidate(Section Section, int Chunk, string Text);
+    sealed record Candidate(Section Section, int Chunk, string Text, string Time);
 
     // Fazami, żeby nie przełączać modeli przy każdym punkcie (przełączenie = przeładowanie VRAM): Llama wypisuje wszystkie listy,
-    // model sprawdzający ocenia je paczkami (jedno zapytanie na sekcję i część transkrypcji), Llama poprawia odrzucone paczką, sprawdzający ocenia
-    // poprawki - najwyżej DebateRounds rund. Tematy: jeden na ~3 min rozmowy.
-    // sections: Full (całość) albo Partial (kawałek na żywo). context: notatki częściowe z kawałków - kontekst całej rozmowy dla notatki z całości.
+    // model sprawdzający ocenia je paczkami (jedno zapytanie na sekcję i część rozmowy), Llama poprawia odrzucone paczką, sprawdzający ocenia
+    // poprawki - najwyżej DebateRounds rund. Summary z części = przebieg (3-6 punktów z czasami na ~5 min); podsumowanie całości
+    // Llama pisze potem z przebiegu. sections: Full (całość) albo Partial (kawałek na żywo, ~5 min: przebieg jako podsumowanie).
     public static async Task<Notes> WriteAsync(string transcript, string language, Settings s, WorkNotes? work, CancellationToken ct, Action<string>? log = null,
-        KnowledgeBase? kb = null, IReadOnlyList<Section>? sections = null, string context = "")
+        KnowledgeBase? kb = null, IReadOnlyList<Section>? sections = null)
     {
         var wanted = sections ?? Full;
         var rules = LoadRules();
-        var chunks = Chunk(transcript, ChunkChars);
+        // niepewne słowa oznaczone w transkrypcji (<span ...>??słowo??</span>) - model przepisywał znaczniki do notatki
+        transcript = Regex.Replace(transcript, @"<span[^>]*>\?\?(.*?)\?\?</span>", "$1");
+        var parts = Parts(transcript);
         var history = new StringBuilder();
-        // objaśnienia użytkownika dla pojęć z każdej części (baza wiedzy) + notatki częściowe jako kontekst
-        var known = chunks.Select(chunk => (kb == null ? "" : KnowledgeBase.Describe(kb.Relevant(chunk)))
-            + (context.Length > 0 ? (language == "pl" ? "\nNotatki częściowe z kolejnych fragmentów rozmowy (kontekst):\n" : "\nPartial notes from consecutive parts (context):\n") + context : "")).ToList();
+        // objaśnienia użytkownika dla pojęć z każdej części (baza wiedzy)
+        var known = parts.Select(p => kb == null ? "" : KnowledgeBase.Describe(kb.Relevant(p.Text))).ToList();
         // nazwy z objaśnień użytkownika ("Heroes III") są znane, choć nie padły w rozmowie
         var namesSource = transcript + "\n" + string.Join("\n", known);
 
         // 1. listy punktów (model piszący)
         var pending = new List<Candidate>();
         foreach (var section in wanted)
-            for (var k = 0; k < chunks.Count; k++)
-                pending.AddRange(Bullets(await Ollama.GenerateAsync(ListPrompt(section, language, chunks[k], known[k], rules), s.CorrectionModel, s, ct, ContextTokens, 400))
-                    .Where(b => Usable(b, chunks[k])).Take(MaxPerChunk).Select(b => new Candidate(section, k, b)));
+            for (var k = 0; k < parts.Count; k++)
+            {
+                var detail = section == Section.Summary;
+                var answer = await Ollama.GenerateAsync(detail ? DetailPrompt(language, parts[k].Text, known[k], rules) : ListPrompt(section, language, parts[k].Text, known[k], rules),
+                    s.CorrectionModel, s, ct, detail ? 700 : 300);
+                pending.AddRange(Bullets(answer).Select(b => Timed(b, parts, k)).Where(x => Usable(x.Text, parts[k].Text, rules, detail))
+                    .Take(detail ? MaxPointsPerPart : MaxPerPart).Select(x => new Candidate(section, k, x.Text, x.Time)));
+            }
 
-        log?.Invoke($"  step: notes lists ({chunks.Count} parts x {wanted.Count} sections, {s.CorrectionModel}) -> {pending.Count} points");
+        log?.Invoke($"  step: notes lists ({parts.Count} parts x {wanted.Count} sections, {s.CorrectionModel}) -> {pending.Count} points");
 
         // 2. sprawdzanie paczkami (model kontrolny) <-> poprawki paczkami (model piszący)
         var accepted = new List<Candidate>();
@@ -113,13 +130,13 @@ public static class MeetingNotes
             foreach (var group in pending.GroupBy(c => (c.Section, c.Chunk)))
             {
                 var items = group.ToList();
-                var answers = Translator.ParseNumbered(await Ollama.GenerateAsync(CheckBatchPrompt(group.Key.Section, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), language, known[group.Key.Chunk], rules),
-                    s.CheckModel, s, ct, ContextTokens, 8 * items.Count + 16), items.Count);
+                var answers = Translator.ParseNumbered(await Ollama.GenerateAsync(CheckBatchPrompt(group.Key.Section, parts[group.Key.Chunk].Text, items.Select(c => c.Text).ToList(), language, known[group.Key.Chunk]),
+                    s.CheckModel, s, ct, CheckTokens(items.Count)), items.Count);
                 for (var i = 0; i < items.Count; i++)
                 {
                     // nazwy spoza transkrypcji odpadają bez pytania; brak odpowiedzi = NIE
                     var ok = UnsupportedNames(items[i].Text, namesSource).Count == 0 && answers[i] is { } a && IsYes(a);
-                    history.Append($"- [{items[i].Section}] {(ok ? "OK" : "NIE")}{(ok && round > 1 ? $" (po poprawce {round - 1})" : "")}: {items[i].Text}\n");
+                    history.Append($"- [{items[i].Section}] {(ok ? "OK" : "NIE")}{(ok && round > 1 ? $" (po poprawce {round - 1})" : "")}: [{items[i].Time}] {items[i].Text}\n");
                     if (ok)
                     {
                         accepted.Add(items[i]);
@@ -138,47 +155,96 @@ public static class MeetingNotes
             foreach (var group in rejected.GroupBy(c => (c.Section, c.Chunk)))
             {
                 var items = group.ToList();
-                var fixes = Translator.ParseNumbered(await Ollama.GenerateAsync(FixBatchPrompt(language, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), known[group.Key.Chunk], rules),
-                    s.CorrectionModel, s, ct, ContextTokens, 80 * items.Count), items.Count);
+                var fixes = Translator.ParseNumbered(await Ollama.GenerateAsync(FixBatchPrompt(language, parts[group.Key.Chunk].Text, items.Select(c => c.Text).ToList(), known[group.Key.Chunk], rules),
+                    s.CorrectionModel, s, ct, 120 * items.Count), items.Count);
                 for (var i = 0; i < items.Count; i++)
                 {
-                    var fix = fixes[i] is { } f ? Bullets("- " + f).FirstOrDefault(b => Usable(b, chunks[group.Key.Chunk])) : null;
+                    var fix = fixes[i] is { } f ? Bullets("- " + f).Select(b => Timed(b, parts, group.Key.Chunk).Text).FirstOrDefault(b => Usable(b, parts[group.Key.Chunk].Text, rules, group.Key.Section == Section.Summary)) : null;
                     if (fix == null) dropped++;
                     else pending.Add(items[i] with { Text = fix });
                 }
             }
-            log?.Invoke($"  step: notes fixes round {round} (Llama)");
+            log?.Invoke($"  step: notes fixes round {round} ({s.CorrectionModel})");
         }
-        var result = wanted.ToDictionary(section => section, section => accepted.Where(c => c.Section == section)
-            .Select(c => c.Text).Distinct().Take(section == Section.Summary ? MaxSummary : 20).ToList());
+        List<Item> Accepted(Section section, int? part = null) => accepted.Where(c => c.Section == section && (part == null || c.Chunk == part))
+            .OrderBy(c => c.Chunk).ThenBy(c => Seconds(c.Time)).DistinctBy(c => c.Text).Select(c => new Item(c.Time, c.Text)).ToList();
+        var result = wanted.ToDictionary(section => section, section => Accepted(section).Take(section == Section.Summary ? 100 : 20).ToList());
 
-        // 3. tematy: czas z transkrypcji (pierwsza wypowiedź okna ~3 min), model pisze tylko krótki opis fragmentu
-        var topics = new List<(string Time, string Text)>();
-        foreach (var group in TopicWindows(Turns(transcript)))
+        // 3. całość: przebieg (temat każdej części + jej punkty) i podsumowanie z przebiegu; notatka częściowa (bez zadań) zostaje przy przebiegu
+        var notesParts = new List<Part>();
+        if (wanted.Contains(Section.Summary) && wanted.Contains(Section.Tasks) && parts.Count > 1)
         {
-            var answer = await Ollama.GenerateAsync(TopicPrompt(language, string.Join("\n", group.Select(t => t.Line)), kb == null ? "" : KnowledgeBase.Describe(kb.Relevant(string.Join(" ", group.Select(t => t.Line))))), s.CorrectionModel, s, ct, ContextTokens, 60);
-            var text = Bullets("- " + answer.Trim().Split('\n')[0]).FirstOrDefault();
-            // mały model potrafi odpowiedzieć powtórzeniem pytania ("O czym jest ten fragment rozmowy?")
-            if (text != null && !text.TrimEnd('"', ' ').EndsWith('?') && UnsupportedNames(text, namesSource).Count == 0) topics.Add((group[0].Time, text));
+            for (var k = 0; k < parts.Count; k++)
+            {
+                var answer = await Ollama.GenerateAsync(TopicPrompt(language, parts[k].Text, known[k]), s.CorrectionModel, s, ct, 60);
+                var topic = Bullets("- " + answer.Trim().Split('\n')[0]).FirstOrDefault();
+                // mały model potrafi odpowiedzieć powtórzeniem pytania ("O czym jest ten fragment rozmowy?")
+                if (topic == null || topic.TrimEnd('"', ' ').EndsWith('?') || UnsupportedNames(topic, namesSource).Count > 0)
+                    topic = language == "pl" ? "Fragment rozmowy" : "Part of the conversation";
+                notesParts.Add(new Part(parts[k].Time, topic.Trim('"'), Accepted(Section.Summary, k)));
+            }
+            log?.Invoke($"  step: notes topics ({notesParts.Count}, {s.CorrectionModel})");
+            result[Section.Summary] = await SummaryAsync(notesParts, language, s, rules, history, ct);
+            log?.Invoke($"  step: notes summary ({result[Section.Summary].Count} points)");
         }
-        log?.Invoke($"  step: notes topics ({topics.Count}, Llama)");
-        var notes = new Notes(result, topics);
+        var notes = new Notes(result, notesParts);
         work?.Write("09-notes.md", $"Notatki: {s.CorrectionModel} pisze, {s.CheckModel} sprawdza", "Notatka ze spotkania zgodna z transkrypcją.",
-            $"{s.CorrectionModel}: dla każdej sekcji (podsumowanie, decyzje, zadania, otwarte kwestie) wypisz krótkie punkty tylko z transkrypcji; " +
-            $"dla każdych ~3 min rozmowy jedno zdanie tematu. {s.CheckModel}: punkty paczkami - czy transkrypcja je potwierdza (TAK/NIE). " +
-            $"NIE = punkt wraca do piszącego, po {s.DebateRounds}. NIE znika. Nazwy spoza transkrypcji odrzucane bez pytania.",
-            $"gotowe: {kept} punktów przyjętych od razu, {fixedCount} po poprawce, {dropped} usuniętych; tematów {topics.Count}",
+            $"Rozmowa w częściach po ~5 min. {s.CorrectionModel}: z każdej części przebieg (3-6 punktów z czasami) i krótkie listy sekcji " +
+            $"(założenia, wnioski, decyzje, zadania, otwarte kwestie); temat części; podsumowanie całości z przebiegu. {s.CheckModel}: punkty paczkami - " +
+            $"czy transkrypcja je potwierdza (TAK/NIE). NIE = punkt wraca do piszącego, po {s.DebateRounds}. NIE znika. Nazwy spoza transkrypcji odrzucane bez pytania.",
+            $"gotowe: {kept} punktów przyjętych od razu, {fixedCount} po poprawce, {dropped} usuniętych; części {parts.Count}",
             history + "\n" + Render(notes, language, ""));
         return notes;
     }
 
-    // Okna tematów: kolejne wypowiedzi, aż minie TopicSeconds od pierwszej w oknie.
+    // Podsumowanie całości z przebiegu (nie z transkrypcji - 1,5 h się nie mieści): Llama pisze, sprawdzający ocenia z tym samym przebiegiem, NIE = punkt odpada.
+    static async Task<List<Item>> SummaryAsync(List<Part> parts, string language, Settings s, string rules, StringBuilder history, CancellationToken ct)
+    {
+        var source = string.Concat(parts.Select(p => $"[{p.Time}] {p.Topic}\n" + string.Concat(p.Points.Select(x => $"- {x.Text}\n"))));
+        var tokens = Math.Min(await Ollama.ContextAsync(s.CorrectionModel, s, ct), await Ollama.ContextAsync(s.CheckModel, s, ct));
+        var result = new List<Item>();
+        foreach (var chunk in Chunk(source, ChunkCharsFor(tokens, rules.Length)))
+        {
+            var points = Bullets(await Ollama.GenerateAsync(SummaryPrompt(language, chunk, rules), s.CorrectionModel, s, ct, 700)).Where(b => !IsFragment(b)).Take(MaxSummary).ToList();
+            var answers = Translator.ParseNumbered(await Ollama.GenerateAsync(CheckBatchPrompt(Section.Summary, chunk, points, language), s.CheckModel, s, ct, CheckTokens(points.Count)), points.Count);
+            for (var i = 0; i < points.Count; i++)
+            {
+                var ok = answers[i] is { } a && IsYes(a);
+                history.Append($"- [Overall] {(ok ? "OK" : "NIE")}: {points[i]}\n");
+                if (ok) result.Add(new Item("", points[i]));
+            }
+        }
+        return result;
+    }
+
+    // "[0:15:09] tekst" -> czas wypowiedzi z tej części; bez czasu albo spoza części = początek części.
+    static Item Timed(string bullet, List<(string Time, string Text)> parts, int k)
+    {
+        var m = Regex.Match(bullet, @"^\[?(\d+:\d\d:\d\d)\]?\s*[-–:]?\s*");
+        var inPart = m.Success && Seconds(m.Groups[1].Value) >= Seconds(parts[k].Time) && (k == parts.Count - 1 || Seconds(m.Groups[1].Value) < Seconds(parts[k + 1].Time));
+        return new Item(inPart ? m.Groups[1].Value : parts[k].Time, bullet[m.Length..].Trim());
+    }
+
+    // Części po ~5 min (czas = pierwsza wypowiedź), końcówka krótsza niż minuta dołączona do poprzedniej; bez czasów - po 5000 znaków.
+    public static List<(string Time, string Text)> Parts(string transcript)
+    {
+        var windows = TopicWindows(Turns(transcript));
+        if (windows.Count > 1 && Seconds(windows[^1][^1].Time) - Seconds(windows[^1][0].Time) < 60)
+        {
+            windows[^2].AddRange(windows[^1]);
+            windows.RemoveAt(windows.Count - 1);
+        }
+        return windows.Count == 0 ? Chunk(transcript, 5000).Select(c => ("", c)).ToList()
+            : windows.Select(w => (w[0].Time, string.Join("\n", w.Select(t => t.Line)))).ToList();
+    }
+
+    // Okna części: kolejne wypowiedzi, aż minie PartSeconds od pierwszej w oknie.
     public static List<List<(string Time, string Line)>> TopicWindows(List<(string Time, string Line)> turns)
     {
         var windows = new List<List<(string Time, string Line)>>();
         foreach (var turn in turns)
         {
-            if (windows.Count == 0 || Seconds(turn.Time) - Seconds(windows[^1][0].Time) >= TopicSeconds) windows.Add([]);
+            if (windows.Count == 0 || Seconds(turn.Time) - Seconds(windows[^1][0].Time) >= PartSeconds) windows.Add([]);
             windows[^1].Add(turn);
         }
         return windows;
@@ -190,48 +256,26 @@ public static class MeetingNotes
     {
         var h = Headings.GetValueOrDefault(language) ?? Headings["en"];
         var none = language == "pl" ? "brak" : "none";
+        static string Line(Item x) => x.Time.Length > 0 ? $"[{x.Time}] {x.Text}" : x.Text;
         var text = new StringBuilder(title.Length > 0 ? $"# {title}\n\n" : "");
         foreach (var section in notes.Sections.Keys.Order())
         {
             text.Append($"## {h[section]}\n");
             var items = notes.Sections.GetValueOrDefault(section) ?? [];
             if (items.Count == 0) text.Append($"- {none}\n");
-            foreach (var item in items) text.Append(section == Section.Tasks ? $"- [ ] {item}\n" : $"- {item}\n");
+            foreach (var item in items) text.Append(section == Section.Tasks ? $"- [ ] {Line(item)}\n" : $"- {Line(item)}\n");
             text.Append('\n');
         }
-        text.Append($"## {(language == "pl" ? "Tematy" : "Topics")}\n");
-        if (notes.Topics.Count == 0) text.Append($"- {none}\n");
-        foreach (var (time, topic) in notes.Topics) text.Append($"- [{time}] {topic}\n");
-        return text.ToString();
-    }
-
-    // Notatka w drugim języku = tłumaczenie punktów notatki głównej (nie osobna notatka: dwie niezależne notatki z wywiadu TVN
-    // mówiły różne rzeczy - EN "single doll", PL film "Lalka"). tłumaczenie krzyżowe (Translator: jeden model tłumaczy, drugi sprawdza); nagłówki i czasy bez zmian.
-    public static async Task<Notes> TranslateAsync(Notes notes, string from, string to, Settings s, WorkNotes? work, CancellationToken ct)
-    {
-        var ordered = notes.Sections.OrderBy(x => x.Key).ToList();
-        var texts = ordered.SelectMany(x => x.Value).Concat(notes.Topics.Select(t => t.Text)).ToList();
-        var translated = texts.Count == 0 ? [] : await Translator.TranslateAsync(texts, from, to, s, ct);
-        // nazwy z oryginału muszą przetrwać (TVN: Gemma zamieniła "Maciej Kawulski" na "Maciej Pawłowski"): jedna próba z listą nazw,
-        // potem zostaje oryginał punktu
-        for (var i = 0; i < texts.Count; i++)
+        if (notes.Parts.Count == 0) return text.ToString();
+        text.Append($"## {(language == "pl" ? "Przebieg rozmowy" : "Course of the conversation")}\n\n");
+        foreach (var part in notes.Parts)
         {
-            var names = Names(texts[i]);
-            if (translated[i] == null || MissingNames(names, translated[i]!).Count == 0) continue;
-            var retry = await Ollama.GenerateAsync($"Translate from {Translator.Name(from)} to {Translator.Name(to)}. Keep these names exactly: " +
-                $"{string.Join(", ", names)}. Answer with the translation only.\n\n{texts[i]}", Translator.Models(to, s).Translator, s, ct, 2048, 300);
-            retry = retry.Replace("*", "").Trim().Split('\n')[0].Trim();
-            translated[i] = MissingNames(names, retry).Count == 0 && retry.Length > 0 ? retry : null;
+            text.Append($"### [{part.Time}] {part.Topic}\n");
+            if (part.Points.Count == 0) text.Append($"- {none}\n");
+            foreach (var item in part.Points) text.Append($"- {Line(item)}\n");
+            text.Append('\n');
         }
-        // brak tłumaczenia punktu = zostaje oryginał
-        var queue = new Queue<string>(texts.Select((t, i) => translated[i] ?? t));
-        var result = new Notes(ordered.ToDictionary(x => x.Key, x => x.Value.Select(_ => queue.Dequeue()).ToList()),
-            notes.Topics.Select(t => (t.Time, queue.Dequeue())).ToList());
-        work?.Write("10-notes-translation.md", $"Tłumaczenie notatek {from.ToUpperInvariant()} -> {to.ToUpperInvariant()}",
-            $"{s.CheckModel} tłumaczy punkty, {s.CorrectionModel} sprawdza każdy z oryginałem.",
-            "Przetłumacz każdy punkt notatki; drugi model porównuje oryginał z tłumaczeniem i poprawia różnice. Nagłówki, czasy i nazwy bez zmian.",
-            $"gotowe: {texts.Count} punktów", Render(result, to, ""));
-        return result;
+        return text.ToString();
     }
 
     // known: objaśnienia użytkownika z bazy wiedzy dla pojęć z tej części ("diamentowy golem = jednostka z gry") - model nie zgaduje.
@@ -265,8 +309,8 @@ public static class MeetingNotes
     // Kontrola w języku notatki (dyskusja modeli zawsze w języku rozmowy). Pytanie zależy od sekcji: TVN - "decyzje"
     // i "zadania" były zwykłymi faktami i cytatami, a samo "czy transkrypcja to potwierdza" je przepuszczało.
     // Transkrypcja na początku promptu: kolejne zapytania o tę samą część zaczynają się tak samo, więc Ollama używa ponownie jej obliczeń.
-    public static string CheckBatchPrompt(Section section, string transcript, IReadOnlyList<string> statements, string language = "en", string known = "", string rules = "") =>
-        (language == "pl" ? "## TRANSKRYPCJA\n" : "## TRANSCRIPT\n") + transcript + "\n\n" + Known(language, known) + Rules(language, rules) + (language, section) switch
+    public static string CheckBatchPrompt(Section section, string transcript, IReadOnlyList<string> statements, string language = "en", string known = "") =>
+        (language == "pl" ? "## TRANSKRYPCJA\n" : "## TRANSCRIPT\n") + transcript + "\n\n" + Known(language, known) + (language, section) switch
         {
             ("pl", Section.Decisions) => "Dla każdego numerowanego punktu: czy z transkrypcji wynika, że uczestnicy wyraźnie podjęli tę decyzję (uzgodnili albo postanowili), a nie tylko wspomnieli fakt?",
             ("pl", Section.Assumptions) => "Dla każdego numerowanego punktu: czy z transkrypcji wynika, że uczestnicy przyjęli to założenie (traktują je jako dane)?",
@@ -292,6 +336,22 @@ public static class MeetingNotes
           "Answer with numbered lines, one per note.\n\n")
         + string.Concat(statements.Select((x, i) => $"{i + 1}. {x}\n"));
 
+    static string DetailPrompt(string language, string transcript, string known = "", string rules = "") => language == "pl"
+        ? Rules(language, rules) + Known(language, known) + "Oto fragment rozmowy (ok. 5 minut). Opisz dokładnie, co w nim powiedziano: 3-6 punktów, każdy w osobnej linii " +
+          "zaczynającej się od \"- [g:mm:ss] \" - czas z transkrypcji wypowiedzi, której punkt dotyczy. Każdy punkt to jedno-dwa pełne zdania po polsku z konkretami: " +
+          "kto, co, nazwy, liczby, powody. Własnymi słowami, bez wklejania wypowiedzi. Pomiń powitania, podziękowania i rozmowy o niczym. " +
+          "\"Ja\" to autor notatki, \"Rozmówca 1\", \"Rozmówca 2\" itd. to inni uczestnicy; jeśli ktoś przedstawia się z imienia, użyj imienia.\n\n## TRANSKRYPCJA\n" + transcript
+        : Rules(language, rules) + Known(language, known) + "Here is a part of a conversation (about 5 minutes). Describe exactly what was said: 3-6 points, each on its own line " +
+          "starting with \"- [h:mm:ss] \" - the transcript time of the statement the point is about. Each point is one or two full sentences in English with specifics: " +
+          "who, what, names, numbers, reasons. In your own words, do not paste statements. Skip greetings, thanks and small talk. " +
+          "\"Me\" is the author of the notes, \"Speaker 1\", \"Speaker 2\" etc. are the other participants; if someone introduces themselves, use their name.\n\n## TRANSCRIPT\n" + transcript;
+
+    static string SummaryPrompt(string language, string course, string rules = "") => language == "pl"
+        ? Rules(language, rules) + "Oto przebieg rozmowy: tematy kolejnych części (z czasem) i ich punkty. Napisz podsumowanie całości: 5-10 punktów, każdy w osobnej linii " +
+          "zaczynającej się od \"- \", jedno-dwa pełne zdania po polsku: o czym była rozmowa, najważniejsze informacje i do czego doprowadziła. Tylko to, co jest w przebiegu.\n\n## PRZEBIEG\n" + course
+        : Rules(language, rules) + "Here is the course of a conversation: topics of consecutive parts (with times) and their points. Write a summary of the whole: 5-10 points, each on its own line " +
+          "starting with \"- \", one or two full sentences in English: what the conversation was about, the most important information and what it led to. Only what the course says.\n\n## COURSE\n" + course;
+
     static string TopicPrompt(string language, string fragment, string known = "") => language == "pl"
         ? Known(language, known) + "Fragment rozmowy:\n" + fragment + "\n\nNapisz temat tego fragmentu: jedno krótkie zdanie oznajmujące po polsku (np. \"Zapowiedź gości programu.\"). Tylko temat."
         : Known(language, known) + "Part of a conversation:\n" + fragment + "\n\nWrite the topic of this part: one short statement in English (e.g. \"Introduction of the show's guests.\"). Topic only.";
@@ -316,8 +376,15 @@ public static class MeetingNotes
         || Regex.IsMatch(bullet, @"\s[-–]\s+(tak|nie|yes|no)\b", RegexOptions.IgnoreCase)
         || Regex.IsMatch(bullet, @"\b(Rozmówc\w*|Speakers?)\s+N\b");
 
-    // Punkt do notatki: nie cytat, nie przepisana wypowiedź, nie półzdanie.
-    static bool Usable(string bullet, string transcript) => !IsQuote(bullet) && !IsCopied(bullet, transcript) && !IsFragment(bullet);
+    // Punkt do notatki: nie cytat, nie przepisana wypowiedź ani zasada z notes-rules.md (Llama wpisała "Tylko to, co padło w rozmowie..."
+    // jako założenie), nie półzdanie, nie pusty szablon zadania ("Krotor: Zadanie (H3DM, brak terminu)").
+    // Przebieg (detail) może zaczynać się od "Rozmówca 1:" - to opis, kto co powiedział (test 1,5 h: filtr cytatów opróżnił 9 z 17 części).
+    static bool Usable(string bullet, string transcript, string rules = "", bool detail = false) =>
+        (detail || !IsQuote(bullet)) && !IsCopied(bullet, transcript) && !IsCopied(bullet, rules) && !IsFragment(bullet)
+        && !Regex.IsMatch(bullet, @"\b(Zadanie|Task)\s*\(");
+
+    // Qwen dopisuje uzasadnienie do każdego "N. NIE (...)"; limit 8 tokenów na punkt ucinał odpowiedź po 2-3 punktach, reszta = NIE.
+    static int CheckTokens(int count) => 80 * count + 40;
 
     public static bool IsYes(string answer) => Regex.IsMatch(answer.Replace("*", ""), @"^\W*(YES|TAK)\b", RegexOptions.IgnoreCase);
 
@@ -325,7 +392,7 @@ public static class MeetingNotes
     public static List<string> Bullets(string answer) =>
         Regex.Matches(answer, @"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", RegexOptions.Multiline)
             .Select(m => Regex.Replace(Regex.Replace(m.Groups[1].Value.Replace("*", ""), @"^\[\s?x?\]\s*", ""),
-                @"^(Decyzja|Decision|Zadanie|Task|Pytanie|Question|Temat|Topic|Otwarta kwestia|Open question)\s*:\s*", "", RegexOptions.IgnoreCase).Trim())
+                @"^(Decyzja|Decision|Zadanie|Task|Pytanie( bez odpowiedzi)?|(Unanswered )?Question|Temat|Topic|Otwarta kwestia|Open question|Wniosek|Conclusion|Założenie|Assumption|Dane wejściowe)\s*:\s*|^(Wnioskuję|Wnioskujemy),?\s*że\s+", "", RegexOptions.IgnoreCase).Trim())
             .Where(x => x.Length > 3 && !Regex.IsMatch(x, @"^\W*(brak|none|nic|nothing)\b", RegexOptions.IgnoreCase))
             .Distinct().ToList();
 

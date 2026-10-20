@@ -22,7 +22,7 @@ public static class TranscriptLlm
             var answer = await Ollama.GenerateAsync(
                 "List the proper names (people, companies, places, products) and specialist terms that appear in this meeting transcript " +
                 "and that a speech recognizer could misspell. Use the most likely correct spelling. Answer with one comma-separated line, " +
-                $"at most 40 items, nothing else.\n\n{text}", s.CorrectionModel, s, ct, 8192, 400);
+                $"at most 40 items, nothing else.\n\n{text}", s.CorrectionModel, s, ct, 400);
             // tylko nazwy własne: pospolite słowa z pierwszego przebiegu bywają błędne ("stanarzysty") i utrwalałyby błąd
             terms.AddRange(SplitTerms(answer.Split('\n').FirstOrDefault(l => l.Contains(',')) ?? answer).Where(IsProperName));
         }
@@ -52,7 +52,7 @@ public static class TranscriptLlm
         if (text.Length > 12000) text = text[..12000];
         var answer = await Ollama.GenerateAsync(
             "In one sentence, name the subject area of this conversation (for example which game, product or field). " +
-            $"Do not quote or list words from the text. Answer in English, nothing else.\n\n{text}", s.CorrectionModel, s, ct, 8192, 80);
+            $"Do not quote or list words from the text. Answer in English, nothing else.\n\n{text}", s.CorrectionModel, s, ct, 80);
         return Regex.Replace(answer.Replace("*", ""), @"\s+", " ").Trim();
     }
 

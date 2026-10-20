@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using NAudio.Wave;
 using TeamsCatcher.Core;
 
@@ -493,7 +493,7 @@ public class TranscriberTests
     {
         var s = new Settings { WhisperModel = @"C:\m\large-v3.bin", WhisperVadModel = @"C:\m\vad.bin" };
         var args = Transcriber.BuildWhisperArgs(s, "whisper_0.wav", "whisper_0", vad: true, "auto");
-        Assert.Equal("-m \"C:\\m\\large-v3.bin\" -l auto -f \"whisper_0.wav\" -sns -ml 80 -sow -ojf -of \"whisper_0\" -np --vad -vm \"C:\\m\\vad.bin\"", args);
+        Assert.Equal("-m \"C:\\m\\large-v3.bin\" -l auto -f \"whisper_0.wav\" -sns -ml 80 -sow -ojf -of \"whisper_0\" --vad -vm \"C:\\m\\vad.bin\"", args);
         Assert.DoesNotContain("--vad", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "pl"));
     }
 }
@@ -758,21 +758,12 @@ public class DebateTests
         Assert.Equal("jakieś ??diamentowe?? golemy.", Debate.MarkDisagreement("jakieś diamentowe golemy.", "jakieś kamienne golemy."));
 
     [Fact]
-    public void Parakeet_tokens_become_words_and_sentences()
+    public void Hypothesis_words_become_sentences_and_qwen_text_keeps_the_sentence_time()
     {
-        // fragment wyjścia parakeet-cli -ps (stderr)
-        const string output = """
-              [ 0] id= 2674 frame= 82 dur_idx= 3 dur_val= 3 p=0.7720 plog=-0.2588 t0= 656 t1= 680 word_start=true "▁Nie"
-              [ 1] id=  307 frame= 85 dur_idx= 2 dur_val= 2 p=0.9997 plog=-0.0003 t0= 680 t1= 696 word_start=true "▁u"
-              [ 2] id=  308 frame= 87 dur_idx= 2 dur_val= 2 p=0.9900 plog=-0.0100 t0= 696 t1= 720 word_start=false "cierpisz."
-              [ 3] id=  309 frame= 90 dur_idx= 2 dur_val= 2 p=0.9900 plog=-0.0100 t0= 800 t1= 830 word_start=true "▁Tak."
-            """;
-        var words = Parakeet.ParseWords(output);
-        Assert.Equal(["Nie", "ucierpisz.", "Tak."], words.Select(w => w.Text));
-        Assert.Equal((6560L, 7200L), (words[0].FromMs, words[1].ToMs));
-        var sentences = Parakeet.Sentences(words, "Rozmówcy", "pl");
-        Assert.Equal(["Nie ucierpisz.", "Tak."], sentences.Select(s => s.Text));
-        Assert.Equal((6560L, 7200L), (sentences[0].FromMs, sentences[0].ToMs));
+        var sentences = Transcriber.HypothesisSentences([(0, 300, "Nie"), (300, 600, "wiem."), (700, 900, "Tak")], "Rozmówcy", "pl");
+        Assert.Equal(["Nie wiem.", "Tak"], sentences.Select(x => x.Text));
+        TranscriptSegment[] a = [new(1000, 4000, "Rozmówca 1", "Chili było pikantne."), new(5000, 6000, "Rozmówca 2", "Okej.")];
+        Assert.Equal([new HypothesisWord("C", "Rozmówcy", 1000, 4000, "Chili było zbyt pikantne.")], QwenAsr.Words(a, [" Chili było zbyt pikantne. ", ""], "Rozmówcy"));
     }
 
     [Fact]
@@ -848,6 +839,10 @@ public class NotesReviewTests
     public void Labels_like_decision_are_stripped() => Assert.Equal(["Zasubskrybować kanał."], MeetingNotes.Bullets("- **Decyzja:** Zasubskrybować kanał."));
 
     [Fact]
+    public void Conclusion_labels_are_stripped() =>
+        Assert.Equal(["Merist powinna przebić breaki.", "Shiva się ulepszy."], MeetingNotes.Bullets("- Wniosek: Merist powinna przebić breaki.\n- Wnioskuję, że Shiva się ulepszy."));
+
+    [Fact]
     public void Verifier_copying_the_source_text_is_ignored() =>
         // notatki TVN: Bielik "sprawdzając" tłumaczenie zwrócił polski oryginał z pogrubieniem
         Assert.Equal("Guests: Marcin Dorociński, Maciej Stuhr.", Translator.PickVerified("Goście: Marcin Dorociński, Maciej Stuhr.", "Guests: Marcin Dorociński, Maciej Stuhr.", "**Goście:** Marcin Dorociński, Maciej Stuhr."));
@@ -901,11 +896,11 @@ public class NotesReviewTests
         // kolejność sekcji z kodu, nie z modelu; tylko sekcje notatki (częściowa nie ma zadań)
         var notes = new MeetingNotes.Notes(new()
         {
-            [MeetingNotes.Section.Tasks] = ["Widzowie: subskrypcja kanału"], [MeetingNotes.Section.Summary] = ["Milion widzów obejrzało film."],
+            [MeetingNotes.Section.Tasks] = [new("0:02:10", "Widzowie: subskrypcja kanału")], [MeetingNotes.Section.Summary] = [new("", "Milion widzów obejrzało film.")],
             [MeetingNotes.Section.Decisions] = [],
-        }, [("0:00:05", "Zapowiedź gości.")]);
-        Assert.Equal("# Spotkanie\n\n## Podsumowanie\n- Milion widzów obejrzało film.\n\n## Decyzje i ustalenia\n- brak\n\n## Zadania\n- [ ] Widzowie: subskrypcja kanału\n\n" +
-                     "## Tematy\n- [0:00:05] Zapowiedź gości.\n", MeetingNotes.Render(notes, "pl", "Spotkanie"));
+        }, [new("0:00:05", "Zapowiedź gości.", [new("0:00:07", "Gośćmi są aktorzy filmu.")])]);
+        Assert.Equal("# Spotkanie\n\n## Podsumowanie\n- Milion widzów obejrzało film.\n\n## Decyzje i ustalenia\n- brak\n\n## Zadania\n- [ ] [0:02:10] Widzowie: subskrypcja kanału\n\n" +
+                     "## Przebieg rozmowy\n\n### [0:00:05] Zapowiedź gości.\n- [0:00:07] Gośćmi są aktorzy filmu.\n\n", MeetingNotes.Render(notes, "pl", "Spotkanie"));
         Assert.StartsWith("## Summary\n", MeetingNotes.Render(notes, "en", ""));
         Assert.Equal([MeetingNotes.Section.Summary, MeetingNotes.Section.Assumptions, MeetingNotes.Section.Conclusions, MeetingNotes.Section.Open, MeetingNotes.Section.Decisions],
             MeetingNotes.Partial);
@@ -920,9 +915,20 @@ public class CrossCheckTests
     [Fact]
     public void Translation_is_cross_checked_by_the_other_model()
     {
-        var s = new Settings { CorrectionModel = "llama", CheckModel = "gemma" };
-        Assert.Equal(("gemma", "llama"), Translator.Models("en", s));
-        Assert.Equal(("llama", "gemma"), Translator.Models("pl", s));
+        // piszący (LFM2, po angielsku) tłumaczy na EN, sprawdzający na PL
+        var s = new Settings { CorrectionModel = "lfm2", CheckModel = "memory" };
+        Assert.Equal(("lfm2", "memory"), Translator.Models("en", s));
+        Assert.Equal(("memory", "lfm2"), Translator.Models("pl", s));
+    }
+
+    [Fact]
+    public void Translation_copying_a_polish_line_is_suspect()
+    {
+        string[] originals = ["Okulary? To moje oczy, stary.", "Nie wiem się, Morty. Jakie masz zaimki?"];
+        Assert.False(Translator.Suspect("Glasses? These are my eyes, man.", 0, originals));
+        Assert.True(Translator.Suspect("Nie wiem się, Morty. Jakie masz zaimki?", 0, originals)); // tekst innej wypowiedzi
+        Assert.True(Translator.Suspect(null, 0, originals));
+        Assert.False(Translator.Suspect("Morty!", 0, ["Morty!"])); // krótka linia brzmi tak samo
     }
 
     [Fact]
@@ -1126,6 +1132,53 @@ public class ComponentsTests : IDisposable
         }
     }
 }
+public class SttNotesTests
+{
+    [Fact]
+    public void Model_bullets_keep_times_and_drop_headings()
+    {
+        var answer = "## Fragment\n\nHere's a breakdown:\n\n* **[0:14:55]**: Pączek introduces Ledan.\n* **0:45:51:** Talk about Pupo.\n- Plain point.";
+        Assert.Equal(["[0:14:55] Pączek introduces Ledan.", "[0:45:51] Talk about Pupo.", "Plain point."], SttNotes.Bullets(answer));
+    }
+
+    [Fact]
+    public void Summary_keeps_only_our_sections()
+    {
+        var answer = "Jasne!\n## Notatka ze spotkania\n\n### ## Podsumowanie\n* A.\n\n### ## Decyzje\n- - brak\n## Inne\n* C.";
+        Assert.Equal("## Podsumowanie\n* A.\n\n## Decyzje\n- brak", SttNotes.Sections(answer, "pl"));
+    }
+
+    [Fact]
+    public void Each_sentence_gets_versions_b_and_c_from_its_channel_and_time()
+    {
+        TranscriptSegment[] segments = [new(1000, 4000, "Rozmówca 1", "Chili było zbyt <span style=\"c\">??pikantne??</span>."), new(5000, 7000, Transcriber.Me, "Okej.")];
+        HypothesisWord[] words = [new("B", Transcriber.Others, 1000, 1500, "Czyli"), new("B", Transcriber.Others, 1500, 2500, "było"),
+            new("C", Transcriber.Others, 1200, 1800, "Chili"), new("B", Transcriber.Me, 1000, 2000, "inny kanał"), new("C", Transcriber.Me, 5200, 5600, "Okej")];
+        var lines = SttNotes.Lines(segments, words);
+        Assert.Equal(new SttNotes.Line(1000, "Rozmówca 1", "Chili było zbyt pikantne.", "Czyli było", "Chili"), lines[0]);
+        Assert.Equal(new SttNotes.Line(5000, Transcriber.Me, "Okej.", "", "Okej"), lines[1]);
+        Assert.Contains("C: Chili", SttNotes.PartPrompt("pl", lines, ""));
+        Assert.Equal(2, SttNotes.Parts([.. lines, new(700_000, "Ja", "x", "", "")]).Count); // części po 10 min
+    }
+}
+
+public class CopilotNotesTests
+{
+    [Fact]
+    public void Prompt_has_the_style_and_a_clean_transcript()
+    {
+        var style = "<!--\nKomentarz w <!-- --> pomijany.\n-->\n## Podsumowanie\n- 5-10 punktów.";
+        var transcript = "[0:00:05] Rozmówca 1: gramy na <span style=\"color:#d32f2f\">??Nebuli??</span>.";
+        var text = CopilotNotes.Prompt(style, transcript, "transcript.pl.md", attached: false);
+        Assert.DoesNotContain("pomijany", text);
+        Assert.Contains("## Podsumowanie", text);
+        Assert.Contains("gramy na Nebuli (?).", text);
+        var attached = CopilotNotes.Prompt(style, transcript, "transcript.pl.md", attached: true);
+        Assert.Contains("transcript.pl.md", attached);
+        Assert.DoesNotContain("Rozmówca 1", attached);
+        Assert.Equal(Path.Combine("C:\\r", "notes-copilot.md"), CopilotNotes.NotesPath(Path.Combine("C:\\r", "transcript.pl.md")));
+    }
+}
 public class NotesRulesTests
 {
     [Fact]
@@ -1134,12 +1187,14 @@ public class NotesRulesTests
         var path = Path.Combine(Path.GetTempPath(), "tc_rules_" + Guid.NewGuid().ToString("N") + ".md");
         try
         {
-            File.WriteAllText(path, "<!-- tylko dla ludzi -->\n## Wnioski\n- Wniosek musi wynikać z rozmowy.");
+            // "<!-- -->" w środku tekstu komentarza nie zamyka go (wcześniej reszta komentarza trafiała do modeli)
+            File.WriteAllText(path, "<!--\ntylko dla ludzi.\nKomentarze w <!-- --> modele pomijają.\n-->\n## Wnioski\n- Wniosek musi wynikać z rozmowy.");
             var rules = MeetingNotes.LoadRules(path);
             Assert.DoesNotContain("tylko dla ludzi", rules);
+            Assert.DoesNotContain("pomijają", rules);
             Assert.StartsWith("## Wnioski", rules);
-            var check = MeetingNotes.CheckBatchPrompt(MeetingNotes.Section.Conclusions, "[0:00:01] Ja: tekst", ["punkt"], "pl", "", rules);
-            Assert.Contains("Wniosek musi wynikać z rozmowy.", check);
+            // model sprawdzający dostaje tylko transkrypcję i pytanie - z zasadami Qwen pisał notatkę zamiast TAK/NIE
+            var check = MeetingNotes.CheckBatchPrompt(MeetingNotes.Section.Conclusions, "[0:00:01] Ja: tekst", ["punkt"], "pl");
             Assert.StartsWith("## TRANSKRYPCJA", check); // transkrypcja dalej na początku (wspólny początek zapytań)
             Assert.Contains("Wniosek musi wynikać z rozmowy.", MeetingNotes.FixBatchPrompt("pl", "x", ["punkt"], "", rules));
             Assert.Equal("", MeetingNotes.LoadRules(path + ".missing"));
@@ -1157,16 +1212,72 @@ public class NotesRulesTests
         foreach (var heading in new[] { "Podsumowanie", "Założenia", "Wnioski", "Decyzje", "Zadania", "Otwarte kwestie" }) Assert.Contains(heading, text);
     }
 
+    // baza rośnie z każdym spotkaniem: do promptu trafiają tylko wpisy z fragmentu, a wybór musi być szybki także przy tysiącach wpisów
     [Fact]
-    public void Knowledge_base_text_round_trips_through_the_editor_format()
+    public void Large_knowledge_base_gives_only_relevant_entries_quickly()
     {
-        List<KnowledgeEntry> entries =
-        [
-            new("konsa", "budynek z gry, gdzie zdobywa się anioły", ["consa"]),
-            new("diamentowy", "=diamentowy", ["Jamentowy"]),
-            new("SP", "siła czarów"),
-        ];
-        var parsed = KnowledgeBase.Parse(KnowledgeBase.Format(entries));
-        Assert.Equal(entries.Select(e => (e.Term, e.Meaning, string.Join("|", e.Aliases ?? []))), parsed.Select(e => (e.Term, e.Meaning, string.Join("|", e.Aliases ?? []))));
+        var kb = new KnowledgeBase { Entries = Enumerable.Range(0, 5000).Select(i => new KnowledgeEntry($"termin{i:0000}x", "znaczenie")).ToList() };
+        kb.Entries.Add(new KnowledgeEntry("diamentowy golem", "jednostka z gry"));
+        var text = string.Join(' ', Enumerable.Range(0, 2000).Select(i => $"słowo{i}")) + " a potem diamentowego golema";
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var relevant = kb.Relevant(text);
+        Assert.Equal(["diamentowy golem"], relevant.Select(e => e.Term).ToArray());
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3), $"Relevant took {clock.Elapsed}");
+    }}
+public class DeviceLogTests
+{
+    [Theory]
+    [InlineData("whisper_backend_init_gpu: using CUDA0 backend", "GPU (CUDA0)")]
+    [InlineData("found GPU device 0: CUDA0 (type: 1, cnt: 0)", "GPU (CUDA0)")]
+    [InlineData("whisper_backend_init: using CPU backend", "CPU")]
+    public void Engine_output_tells_gpu_or_cpu(string output, string device) => Assert.Equal(device, Transcriber.Device(output));
+
+    [Theory]
+    [InlineData(5_300_000_000, 5_300_000_000, "100% GPU")]
+    [InlineData(5_000_000_000, 0, "100% CPU")]
+    [InlineData(4_000_000_000, 3_000_000_000, "25% CPU / 75% GPU")]
+    public void Ollama_placement_reads_like_ollama_ps(long size, long vram, string text) => Assert.Equal(text, Ollama.Placement(size, vram));
+}
+public class ContextFitTests
+{
+    // model_info z /api/show (Ollama 0.40) dla modeli używanych przez aplikację
+    const string Llama = """{"general.architecture":"llama","llama.attention.head_count":32,"llama.attention.head_count_kv":8,"llama.block_count":32,"llama.context_length":131072,"llama.embedding_length":4096}""";
+    const string Qwen = """{"general.architecture":"qwen35","qwen35.attention.head_count":16,"qwen35.attention.head_count_kv":4,"qwen35.attention.key_length":256,"qwen35.attention.value_length":256,"qwen35.block_count":32,"qwen35.context_length":262144,"qwen35.embedding_length":2560,"qwen35.full_attention_interval":4}""";
+    const long Mb = 1024 * 1024;
+
+    static (long, int) Kv(string json) => Ollama.KvPerToken(System.Text.Json.JsonDocument.Parse(json).RootElement);
+
+    [Fact]
+    public void Kv_cache_per_token_matches_the_architecture()
+    {
+        Assert.Equal((131072L, 131072), Kv(Llama)); // 32 warstwy x 8 głowic KV x (128 + 128) x 2 B
+        Assert.Equal((32768L, 262144), Kv(Qwen)); // uwaga tylko w 8 z 32 warstw (hybryda)
+    }
+
+    [Theory]
+    [InlineData(8188 - 400, 12288, 16384)] // RTX 4060 8 GB: Llama 12288 (16384 = 13% na CPU), Qwen do limitu 16k
+    [InlineData(6144 - 400, 4096, 16384)] // docelowa karta 6 GB: Llama tylko minimum
+    public void Context_is_the_largest_that_fits_the_vram_budget(long budgetMb, int llama, int qwen)
+    {
+        Assert.Equal(llama, Ollama.FitContext(budgetMb * Mb, 4_920_753_328, Kv(Llama).Item1, Kv(Llama).Item2));
+        Assert.Equal(qwen, Ollama.FitContext(budgetMb * Mb, 3_324_173_934, Kv(Qwen).Item1, Kv(Qwen).Item2));
+    }
+
+    [Fact]
+    public void Note_chunks_grow_with_the_context_but_never_below_the_minimum()
+    {
+        Assert.Equal(4000, MeetingNotes.ChunkCharsFor(4096, 5000));
+        Assert.Equal((int)((16384 - 2000) * 2.5) - 5000, MeetingNotes.ChunkCharsFor(16384, 5000));
+    }
+
+    [Fact]
+    public void Notes_parts_are_five_minutes_and_a_short_tail_joins_the_last_part()
+    {
+        var lines = Enumerable.Range(0, 23).Select(i => $"[{TimeSpan.FromSeconds(900 + i * 30):h\\:mm\\:ss}] Rozmówca 1: zdanie {i}.");
+        var parts = MeetingNotes.Parts(string.Join("\n\n", lines));
+        // 15:00-26:00: okna 15:00, 20:00, 25:00-26:00 (ostatnie ponad minutę = osobna część)
+        Assert.Equal(["0:15:00", "0:20:00", "0:25:00"], parts.Select(p => p.Time));
+        Assert.Equal(2, MeetingNotes.Parts(string.Join("\n", lines.Take(21))).Count); // 25:00 samo = dołączone do poprzedniej
+        Assert.Single(MeetingNotes.Parts("bez czasów"));
     }
 }

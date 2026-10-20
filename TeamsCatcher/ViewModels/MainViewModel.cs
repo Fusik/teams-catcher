@@ -1,4 +1,5 @@
-﻿using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -19,6 +20,14 @@ public sealed class QuestionItem(UnclearTerm term, string folder) : ObservableOb
     public string Folder { get; } = folder;
     public string Recording => Path.GetFileName(Folder);
     public string Meaning { get => _meaning; set => Set(ref _meaning, value); }
+}
+
+// Wpis bazy wiedzy w tabeli (zakładka MODELS); inne zapisy po przecinku. Pusty konstruktor = nowy wiersz w tabeli.
+public sealed class KnowledgeRow
+{
+    public string Term { get; set; } = "";
+    public string Spellings { get; set; } = "";
+    public string Meaning { get; set; } = "";
 }
 
 public sealed record SpeakersOption(int Count)
@@ -60,7 +69,6 @@ public sealed class MainViewModel : ObservableObject
         BrowseCommand = new RelayCommand(Browse);
         OpenOutputFolderCommand = new RelayCommand(() => OpenFolder(_settings.OutputFolder));
         OpenRecordingCommand = new RelayCommand<RecordingItem>(r => OpenFolder(r.Folder));
-        TranscribeCommand = new RelayCommand<RecordingItem>(r => _service.QueueTranscription(r.Folder));
         // "Save and recalculate" (pod pytaniami) i "Redo after clarification" (panel notatki) robią to samo dla wybranego nagrania
         RedoCommand = new RelayCommand(Redo, () => SelectedRecording != null);
         SaveKnowledgeCommand = RedoCommand;
@@ -71,7 +79,18 @@ public sealed class MainViewModel : ObservableObject
         SaveKnowledgeTextCommand = new RelayCommand(SaveKnowledgeText);
         try { _notesRules = File.Exists(MeetingNotes.RulesPath) ? File.ReadAllText(MeetingNotes.RulesPath) : ""; }
         catch (IOException e) { AddLog($"Notes rules not read: {e.Message}"); }
-        _knowledgeText = KnowledgeBase.Format(KnowledgeBase.Load(KnowledgeBase.DefaultPath).Entries);
+        SaveStyleCommand = new RelayCommand(SaveStyle);
+        OpenStyleCommand = new RelayCommand(() => { if (File.Exists(CopilotNotes.StylePath)) Process.Start(new ProcessStartInfo(CopilotNotes.StylePath) { UseShellExecute = true }); });
+        CopyPromptCommand = new RelayCommand<string>(CopyPrompt);
+        OpenCopilotCommand = new RelayCommand(() => Process.Start(new ProcessStartInfo(CopilotUrl) { UseShellExecute = true }));
+        PasteNoteCommand = new RelayCommand(PasteNote);
+        try { _notesStyle = File.Exists(CopilotNotes.StylePath) ? File.ReadAllText(CopilotNotes.StylePath) : ""; }
+        catch (IOException e) { AddLog($"Note style not read: {e.Message}"); }
+        // filtr: termin, inny zapis albo znaczenie zawiera szukany tekst
+        KnowledgeView = System.Windows.Data.CollectionViewSource.GetDefaultView(KnowledgeRows);
+        KnowledgeView.Filter = o => o is not KnowledgeRow r || KnowledgeSearch.Length == 0
+            || $"{r.Term} {r.Spellings} {r.Meaning}".Contains(KnowledgeSearch, StringComparison.CurrentCultureIgnoreCase);
+        LoadKnowledgeRows();
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         timer.Tick += (_, _) => Refresh();
         timer.Start();
@@ -100,8 +119,34 @@ public sealed class MainViewModel : ObservableObject
             if (!Set(ref _selectedRecording, value)) return;
             LoadQuestions();
             LoadNotes();
+            LoadSteps();
         }
     }
+
+    // Kroki wybranego nagrania (panel RECORDING, tylko podgląd): kiedy i jak długo liczony (analysis\steps.json; starsze nagrania - po plikach wyników).
+    public sealed record StepItem(string Step, string Label, string Status, string Tip);
+    public List<StepItem> RecordingSteps { get; private set; } = [];
+
+    void LoadSteps()
+    {
+        var folder = SelectedRecording?.Folder;
+        var done = folder == null ? [] : Transcriber.LoadSteps(folder);
+        bool Has(string file) => folder != null && File.Exists(Path.Combine(folder, file));
+        StepItem Item(Transcriber.Steps step, string label, bool exists, string tip) =>
+            new(step.ToString(), label, done.TryGetValue(step.ToString(), out var time) ? "✓ " + time : exists ? "✓" : "-", tip);
+        var steps = new List<StepItem>
+        {
+            Item(Transcriber.Steps.Transcribe, "1. Transcribe", Has(Transcriber.TranscriptTxt), "Whisper + speakers (pyannote). Runs after a call or a video import when Transcript is ticked."),
+            Item(Transcriber.Steps.Correct, "2. Correct", Has(Path.Combine(WorkNotes.Dir, "07-correction-model.md")),
+                "Models discuss unsure sentences (Whisper turbo, Qwen3-ASR, text models) and list words TO CLARIFY. Slowest step (~1 h for 1.5 h)."),
+            Item(Transcriber.Steps.Notes, "3. Notes (PL + EN)", Has(MeetingNotes.FileName("pl")) || Has(MeetingNotes.FileName("en")),
+                "Notes in Polish and English by one model (qwen3.5 Q3_K_M) from 3 speech recognitions (Whisper large-v3, turbo, Qwen3-ASR): it picks the version consistent with the context. Also: COPILOT tab."),
+        };
+        if (steps.SequenceEqual(RecordingSteps)) return;
+        RecordingSteps = steps;
+        OnPropertyChanged(nameof(RecordingSteps));
+    }
+
 
     string _notes = "";
     public string Notes { get => _notes; private set => Set(ref _notes, value); }
@@ -111,13 +156,52 @@ public sealed class MainViewModel : ObservableObject
     public string Analyzing { get => _analyzing; private set => Set(ref _analyzing, value); }
     string _lastStep = "";
 
+    // Prawy panel: notatka PL / EN, transkrypcja i 3 rozpoznania mowy, z których powstała notatka (tylko istniejące pliki).
+    static readonly (string Label, string File)[] AllViews =
+    [
+        ("Live", Path.Combine(LiveChunks.Dir, TeamsCatcher.Core.LiveTranscript.FileName)), ("Notes PL", MeetingNotes.FileName("pl")), ("Notes EN", MeetingNotes.FileName("en")), ("Copilot", CopilotNotes.FileName),
+        ("Transcript PL", "transcript.pl.md"), ("Transcript EN", "transcript.en.md"),
+        ("A large-v3", Path.Combine(WorkNotes.Dir, "01-whisper-large-v3.md")), ("B turbo", Path.Combine(WorkNotes.Dir, "02-whisper-turbo.md")),
+        ("C Qwen3-ASR", Path.Combine(WorkNotes.Dir, "03-qwen3-asr.md")),
+    ];
+    public List<string> ResultViews { get; private set; } = [];
+    string _resultView = "Notes PL";
+    public string ResultView
+    {
+        get => _resultView;
+        set { if (value != null && Set(ref _resultView, value)) LoadNotes(); }
+    }
+
     string? NotesPath() => SelectedRecording == null ? null
-        : new[] { "pl", "en" }.Select(l => Path.Combine(SelectedRecording.Folder, MeetingNotes.FileName(l))).FirstOrDefault(File.Exists);
+        : AllViews.Where(v => v.Label == ResultView).Select(v => Path.Combine(SelectedRecording.Folder, v.File)).FirstOrDefault(File.Exists);
 
     void LoadNotes()
     {
-        try { Notes = NotesPath() is { } p ? File.ReadAllText(p) : SelectedRecording == null ? "" : "No notes yet for this recording."; }
+        var views = SelectedRecording == null ? [] : AllViews.Where(v => File.Exists(Path.Combine(SelectedRecording.Folder, v.File))).Select(v => v.Label).ToList();
+        if (!views.SequenceEqual(ResultViews))
+        {
+            ResultViews = views;
+            OnPropertyChanged(nameof(ResultViews));
+        }
+        if (views.Count > 0 && !views.Contains(_resultView))
+        {
+            _resultView = views[0];
+            OnPropertyChanged(nameof(ResultView));
+        }
+        // znaczniki niepewnych słów (<span ...>??słowo??</span>) w podglądzie jako "słowo (?)"
+        try { Notes = NotesPath() is { } p ? Regex.Replace(File.ReadAllText(p), @"<span[^>]*>\?\?(.*?)\?\?</span>", "$1 (?)") : SelectedRecording == null ? "" : "Nothing yet for this recording."; }
         catch (IOException) { } // plik zapisywany w tej chwili - następne odświeżenie
+    }
+
+    // Zmiana plików wybranego nagrania (krok skończony, nowe pytania, notatka) -> panel od razu, bez przełączania nagrania.
+    string _filesStamp = "";
+
+    string FilesStamp()
+    {
+        if (SelectedRecording is not { } r || !Directory.Exists(r.Folder)) return "";
+        var analysis = Path.Combine(r.Folder, WorkNotes.Dir);
+        return string.Join("|", Directory.EnumerateFiles(r.Folder).Concat(Directory.Exists(analysis) ? Directory.EnumerateFiles(analysis) : [])
+            .Append(TeamsCatcher.Core.LiveTranscript.PathIn(r.Folder)).Select(f => File.GetLastWriteTimeUtc(f).Ticks));
     }
 
     // Po objaśnieniu niejasnych słów: zapis do bazy wiedzy i analiza od nowa (dyskusja, tłumaczenie, notatki) z tym kontekstem, bez Whispera.
@@ -125,7 +209,7 @@ public sealed class MainViewModel : ObservableObject
     {
         if (SelectedRecording is not { } recording) return;
         SaveKnowledge(recalculate: false);
-        _service.QueueTranscription(recording.Folder, fromState: Transcriber.LoadState(recording.Folder) != null);
+        _service.QueueTranscription(recording.Folder, Transcriber.LoadState(recording.Folder) != null ? Transcriber.Steps.Correct : Transcriber.Steps.Transcribe);
         AddLog($"Redo after clarification: {recording.Name}");
     }
     public int[] FpsOptions { get; } = [5, 15, 30];
@@ -136,18 +220,24 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand BrowseCommand { get; }
     public RelayCommand OpenOutputFolderCommand { get; }
     public RelayCommand<RecordingItem> OpenRecordingCommand { get; }
-    public RelayCommand<RecordingItem> TranscribeCommand { get; }
     public RelayCommand ImportVideoCommand { get; }
 
     // --- zakładka MODELS: wszystko, co zmienia pracę modeli tekstu ---
     public RelayCommand SaveRulesCommand { get; }
     public RelayCommand OpenRulesCommand { get; }
     public RelayCommand SaveKnowledgeTextCommand { get; }
-    string _notesRules = "", _knowledgeText = "", _modelsStatus = "";
+    string _notesRules = "", _knowledgeSearch = "", _modelsStatus = "";
     // notes-rules.md: zasady, jak powstają notatki (wnioski, decyzje...) - trafiają do każdego zapytania o notatkę
     public string NotesRules { get => _notesRules; set => Set(ref _notesRules, value); }
-    // knowledge.json jako tekst: jedna linia na wpis "[termin - inny zapis - znaczenie]"
-    public string KnowledgeText { get => _knowledgeText; set => Set(ref _knowledgeText, value); }
+    // knowledge.json jako tabela z wyszukiwaniem (baza rośnie z każdym spotkaniem - setki/tysiące wpisów)
+    public ObservableCollection<KnowledgeRow> KnowledgeRows { get; } = [];
+    public System.ComponentModel.ICollectionView KnowledgeView { get; }
+    public string KnowledgeSearch
+    {
+        get => _knowledgeSearch;
+        set { if (Set(ref _knowledgeSearch, value)) { KnowledgeView.Refresh(); OnPropertyChanged(nameof(KnowledgeCount)); } }
+    }
+    public string KnowledgeCount => $"{KnowledgeView.Cast<object>().Count(r => r is KnowledgeRow)} / {KnowledgeRows.Count}";
     public string ModelsStatus { get => _modelsStatus; private set => Set(ref _modelsStatus, value); }
     public string[] LanguageOptions { get; } = ["auto", "pl", "en"];
 
@@ -172,7 +262,7 @@ public sealed class MainViewModel : ObservableObject
     public int VramBudgetMb
     {
         get => _settings.VramBudgetMb;
-        set { _settings.VramBudgetMb = Math.Max(0, value); SaveSettings(); OnPropertyChanged(); }
+        set { _settings.VramBudgetMb = Math.Max(0, value); SaveSettings(); Ollama.ResetContexts(); OnPropertyChanged(); }
     }
 
     public string TranscriptLanguage
@@ -191,10 +281,92 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ModelsStatus = $"Not saved: {e.Message}"; }
     }
 
-    // Cała baza wiedzy z edytora (zastępuje plik); linie bez nawiasów [ ] albo bez znaczenia są pomijane.
+    // --- zakładka COPILOT: notatka przez Copilota w przeglądarce (prompt i odpowiedź przez schowek; aplikacja nic nie wysyła) ---
+    public RelayCommand SaveStyleCommand { get; }
+    public RelayCommand OpenStyleCommand { get; }
+    public RelayCommand<string> CopyPromptCommand { get; }
+    public RelayCommand OpenCopilotCommand { get; }
+    public RelayCommand PasteNoteCommand { get; }
+    string _notesStyle = "", _copilotStatus = "";
+    public string NotesStyle { get => _notesStyle; set => Set(ref _notesStyle, value); }
+    public string CopilotStatus { get => _copilotStatus; private set => Set(ref _copilotStatus, value); }
+
+    public string CopilotUrl
+    {
+        get => _settings.CopilotUrl;
+        set { if (value.Trim().Length > 0) { _settings.CopilotUrl = value.Trim(); SaveSettings(); } OnPropertyChanged(); }
+    }
+
+    void SaveStyle()
+    {
+        try
+        {
+            File.WriteAllText(CopilotNotes.StylePath, NotesStyle);
+            CopilotStatus = $"Note style saved ({DateTime.Now:HH:mm}).";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { CopilotStatus = $"Not saved: {e.Message}"; }
+    }
+
+    // "text": prompt z transkrypcją w treści; "file": sam prompt + Eksplorator z oczyszczoną transkrypcją do przeciągnięcia (długie spotkanie).
+    void CopyPrompt(string mode)
+    {
+        if (SelectedRecording is not { } recording || CopilotNotes.TranscriptPath(recording.Folder) is not { } transcript)
+        {
+            CopilotStatus = "No transcript for the selected recording yet.";
+            return;
+        }
+        try
+        {
+            var attached = mode == "file";
+            var text = File.ReadAllText(transcript);
+            var prompt = CopilotNotes.Prompt(NotesStyle, text, Path.GetFileName(transcript), attached);
+            System.Windows.Clipboard.SetText(prompt);
+            if (attached)
+            {
+                var copy = Path.Combine(recording.Folder, "copilot-" + Path.GetFileName(transcript));
+                File.WriteAllText(copy, CopilotNotes.Clean(text));
+                Process.Start("explorer.exe", $"/select,\"{copy}\"");
+                CopilotStatus = $"Prompt copied ({prompt.Length:N0} chars). Paste it in Copilot and drag {Path.GetFileName(copy)} from Explorer into the chat.";
+            }
+            else CopilotStatus = $"Prompt with the transcript copied ({prompt.Length:N0} chars). Paste it in Copilot (Ctrl+V). Too long for Copilot? Use \"Prompt + file\".";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException) { CopilotStatus = $"Not copied: {e.Message}"; }
+    }
+
+    // Odpowiedź Copilota (przycisk "Kopiuj" pod odpowiedzią) ze schowka -> notes.xx.md nagrania, widoczna w panelu NOTES.
+    void PasteNote()
+    {
+        if (SelectedRecording is not { } recording || CopilotNotes.TranscriptPath(recording.Folder) is not { } transcript) return;
+        var note = System.Windows.Clipboard.ContainsText() ? System.Windows.Clipboard.GetText().Trim() : "";
+        if (note.Length < 50)
+        {
+            CopilotStatus = "Clipboard has no note - click Copy under Copilot's answer first.";
+            return;
+        }
+        try
+        {
+            var path = CopilotNotes.NotesPath(transcript);
+            File.WriteAllText(path, note.StartsWith("# ") ? note + "\n" : $"# {recording.Name}\n\n{note}\n");
+            LoadNotes();
+            ResultView = "Copilot";
+            CopilotStatus = $"Note saved: {Path.GetFileName(path)} ({DateTime.Now:HH:mm}).";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { CopilotStatus = $"Not saved: {e.Message}"; }
+    }
+
+    void LoadKnowledgeRows()
+    {
+        KnowledgeRows.Clear();
+        foreach (var e in KnowledgeBase.Load(KnowledgeBase.DefaultPath).Entries.OrderBy(e => e.Term, StringComparer.CurrentCultureIgnoreCase))
+            KnowledgeRows.Add(new KnowledgeRow { Term = e.Term, Spellings = string.Join(", ", e.Aliases ?? []), Meaning = e.Meaning });
+        OnPropertyChanged(nameof(KnowledgeCount));
+    }
+
+    // Cała baza z tabeli (także wierszy ukrytych filtrem) zastępuje plik; wiersz bez terminu albo znaczenia jest pomijany.
     void SaveKnowledgeText()
     {
-        var entries = KnowledgeBase.Parse(KnowledgeText);
+        var entries = KnowledgeRows.Where(r => r.Term.Trim().Length > 0 && r.Meaning.Trim().Length > 0).Select(r => new KnowledgeEntry(r.Term.Trim(), r.Meaning.Trim(),
+            r.Spellings.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) is { Length: > 0 } a ? a.ToList() : null)).ToList();
         var kb = KnowledgeBase.Load(KnowledgeBase.DefaultPath);
         kb.Entries = entries;
         try { kb.Save(KnowledgeBase.DefaultPath); }
@@ -203,7 +375,7 @@ public sealed class MainViewModel : ObservableObject
             ModelsStatus = $"Knowledge base not saved: {e.Message}";
             return;
         }
-        KnowledgeText = KnowledgeBase.Format(entries);
+        LoadKnowledgeRows();
         ModelsStatus = $"Knowledge base saved: {entries.Count} entries.";
         LoadQuestions();
     }
@@ -308,16 +480,22 @@ public sealed class MainViewModel : ObservableObject
         set { _settings.TranscriptGlossary = value; SaveSettings(); }
     }
 
+    public bool LiveTranscript
+    {
+        get => _settings.LiveTranscript;
+        set { _settings.LiveTranscript = value; SaveSettings(); }
+    }
+
+    public bool CorrectTranscript
+    {
+        get => _settings.CorrectTranscript;
+        set { _settings.CorrectTranscript = value; SaveSettings(); }
+    }
+
     public bool WriteNotes
     {
         get => _settings.WriteNotes;
         set { _settings.WriteNotes = value; SaveSettings(); }
-    }
-
-    public bool TranslateTranscript
-    {
-        get => _settings.TranslateTranscript;
-        set { _settings.TranslateTranscript = value; SaveSettings(); }
     }
 
     public bool AutoTranscribe
@@ -348,7 +526,21 @@ public sealed class MainViewModel : ObservableObject
 
     void Refresh()
     {
+        if (FilesStamp() is var stamp && stamp != _filesStamp)
+        {
+            _filesStamp = stamp;
+            LoadSteps();
+            LoadNotes();
+            LoadQuestions();
+        }
         var session = _service.Session;
+        // start nagrania: nagranie na liście i podgląd "Live"
+        if (session != null && !IsRecording)
+        {
+            LoadRecordings();
+            SelectedRecording = Recordings.FirstOrDefault(r => r.Folder == session.Folder) ?? SelectedRecording;
+            ResultView = "Live";
+        }
         TeamsStatus = _service.TeamsRunning ? "Running" : "Not running";
         IsRecording = session != null;
         IsFinalizing = _service.Finalizing;
@@ -471,9 +663,10 @@ public sealed class MainViewModel : ObservableObject
         foreach (var folder in folders)
         {
             KnowledgeBase.SaveQuestions(folder, KnowledgeBase.LoadQuestions(folder).Where(q => !kb.Knows(q.Term)).ToList());
-            if (recalculate) _service.QueueTranscription(folder, fromState: true);
+            if (recalculate) _service.QueueTranscription(folder, Transcriber.Steps.Correct);
         }
         AddLog($"Knowledge base: {answered.Count + bulk.Count} explanations saved{(recalculate ? $", recalculating {folders.Count} recording(s)" : "")}.");
+        LoadKnowledgeRows();
         LoadQuestions();
     }
 

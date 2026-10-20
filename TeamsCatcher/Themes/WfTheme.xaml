@@ -55,6 +55,12 @@
         </Setter>
     </Style>
 
+    <!-- Nagłówek tabeli w wąskim panelu: WF.DataGridHeader z mniejszym marginesem (10,8 ucinało tekst kolumn). -->
+    <Style x:Key="App.DataGridHeader" TargetType="DataGridColumnHeader" BasedOn="{StaticResource WF.DataGridHeader}">
+        <Setter Property="Padding" Value="6,4" />
+        <Setter Property="FontSize" Value="11" />
+    </Style>
+
     <Style TargetType="TabControl">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
@@ -240,5 +246,19 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- długie podpowiedzi (całe zdanie z transkrypcji w TO CLARIFY) zawijane zamiast jednej linii przez cały ekran -->
+    <Style TargetType="ToolTip">
+        <Setter Property="MaxWidth" Value="520" />
+        <Style.Resources>
+            <Style TargetType="ContentPresenter">
+                <Style.Resources>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="TextWrapping" Value="Wrap" />
+                    </Style>
+                </Style.Resources>
+            </Style>
+        </Style.Resources>
     </Style>
 </ResourceDictionary>

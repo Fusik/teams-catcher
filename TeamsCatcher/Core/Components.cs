@@ -36,9 +36,9 @@ public static class Components
     public static IReadOnlyList<Component> All(Settings s)
     {
         var whisperDir = Path.GetDirectoryName(s.WhisperCli)!;
-        return
+        List<Component> list =
         [
-            new("whisper", "Whisper + Parakeet engines (CUDA 12)", "speech recognition on the GPU", ComponentKind.Zip, 684_913_404, s.WhisperCli,
+            new("whisper", "Whisper engine (CUDA 12)", "speech recognition on the GPU", ComponentKind.Zip, 684_913_404, s.WhisperCli,
                 "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-12.4.0-x64.zip",
                 "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a", whisperDir, "Release/", WhisperFiles),
             new("large-v3", "Whisper large-v3", "main speech recognition model", ComponentKind.File, 3_095_033_483, s.WhisperModel,
@@ -47,8 +47,6 @@ public static class Components
                 $"{Hf}/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin", "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf", s.WhisperVadModel),
             new("turbo", "Whisper large-v3-turbo", "second hypothesis for the models' discussion", ComponentKind.File, 1_624_555_275, s.WhisperAltModel,
                 $"{Hf}/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin", "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69", s.WhisperAltModel),
-            new("parakeet", "NVIDIA Parakeet TDT 0.6B v3", "third hypothesis (different architecture)", ComponentKind.File, 1_255_897_319, s.ParakeetModel,
-                $"{Hf}/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-f16.bin", "833bffc9513b2cae867ee9e51633cfd11e4d51aaa5597c8ac02159385a2b426f", s.ParakeetModel),
             new("jre", "Java 21 (Temurin JRE)", "runs LanguageTool", ComponentKind.Zip, 48_999_141, s.JavaExe,
                 "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jre_x64_windows_hotspot_21.0.12.1_1.zip",
                 "d35f31e712f0fcf6ac5a093edc90204fbff22f720ba3950bd09d331d5e621636", Path.GetDirectoryName(Path.GetDirectoryName(s.JavaExe)!)!, "jdk-21.0.12.1+1-jre/"),
@@ -58,12 +56,18 @@ public static class Components
                 "https://github.com/ollama/ollama/releases/download/v0.40.6/ollama-windows-amd64.zip",
                 "e359637575302f288d76c0007c408a4be9c7376d59c4f28684d63b232a44b427", Path.Combine(Base, OllamaDir)),
             new("writer", $"Text model {s.CorrectionModel}", "writes corrections, notes and translations", ComponentKind.OllamaModel,
-                s.CorrectionModel == "llama3.1:8b" ? 4_920_753_328 : 0, "", s.CorrectionModel),
+                s.CorrectionModel == "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0" ? 2_700_000_000 : 0, "", s.CorrectionModel),
             new("checker", $"Text model {s.CheckModel}", "checks the writer (cross-check)", ComponentKind.OllamaModel,
-                s.CheckModel == "qwen3.5:4b" ? 3_324_173_934 : 0, "", s.CheckModel),
+                s.CheckModel == "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0" ? 1_600_000_000 : 0, "", s.CheckModel),
+        ];
+        // model notatki (krok 4) osobno tylko, gdy to nie piszący albo sprawdzający
+        if (s.NotesModel != s.CorrectionModel && s.NotesModel != s.CheckModel)
+            list.Add(new("notes", $"Text model {s.NotesModel}", "writes English meeting notes (step 4)", ComponentKind.OllamaModel, 0, "", s.NotesModel));
+        list.AddRange([
             new("pyannote", "pyannote speaker separation (Python + PyTorch CUDA)", "tells the other participants apart on the GPU; without it: slower CPU method",
                 ComponentKind.PythonEnv, PyannoteDownload, s.PyannotePython, Target: Path.GetDirectoryName(s.PyannotePython)!),
-        ];
+        ]);
+        return list;
     }
 
     // Brakujące składniki. Ollama: działający serwer (zainstalowana przez użytkownika) = portable niepotrzebna.
@@ -204,6 +208,12 @@ public static class Components
         var info = new ProcessStartInfo(OllamaExe, "serve") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(OllamaExe)! };
         info.Environment["OLLAMA_MODELS"] = Path.Combine(Base, OllamaDir, "models");
         info.Environment["OLLAMA_HOST"] = $"{uri.Host}:{uri.Port}";
+        // kontekst w pamięci q8_0 = połowa VRAM na token przy praktycznie tej samej jakości (wymaga flash attention);
+        // zmienna też w tym procesie - Ollama.ContextAsync liczy wtedy dwa razy większy kontekst
+        Environment.SetEnvironmentVariable("OLLAMA_KV_CACHE_TYPE", "q8_0");
+        Environment.SetEnvironmentVariable("OLLAMA_FLASH_ATTENTION", "1");
+        info.Environment["OLLAMA_KV_CACHE_TYPE"] = "q8_0";
+        info.Environment["OLLAMA_FLASH_ATTENTION"] = "1";
         _ollama = Process.Start(info);
         return _ollama;
     }

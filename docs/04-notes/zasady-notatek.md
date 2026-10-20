@@ -1,4 +1,4 @@
-# Zasady notatek (`notes-rules.md`)
+﻿# Zasady notatek (`notes-rules.md`)
 
 Instrukcja dla modeli: jak powstają wnioski, decyzje, założenia i pozostałe sekcje, co mają zawierać i czego nie.
 
@@ -35,9 +35,13 @@ Instrukcja dla modeli: jak powstają wnioski, decyzje, założenia i pozostałe 
 | ROUNDS | `DebateRounds` (1-6) | rundy dyskusji o zdaniu i rundy kontroli notatek; więcej = dokładniej i wolniej |
 | VRAM MB | `VramBudgetMb` | budżet pamięci karty; gdy oba modele się mieszczą, zostają załadowane |
 | LANGUAGE | `TranscriptLanguage` | auto (wybór PL/EN na kanał) albo wymuszony |
-| KNOWLEDGE BASE | `knowledge.json` | cała baza wiedzy jako tekst, jedna linia na wpis: `[termin - inny zapis - znaczenie]`, poprawka pisowni `[poprawne - źle usłyszane - =poprawne]` |
+| KNOWLEDGE BASE | `knowledge.json` | tabela z wyszukiwaniem (termin, inne zapisy po przecinku, znaczenie); nowy wpis w pustym ostatnim wierszu, usuwanie klawiszem Delete; poprawka pisowni: znaczenie `=poprawne` |
 
 Słowniczek nazw (GLOSSARY) jest na zakładce TEAMS CALLS: podpowiada Whisperowi pisownię i trafia do korekty.
+
+## Duża baza wiedzy
+
+Baza rośnie z każdym spotkaniem, ale do modeli trafiają tylko wpisy, które występują w analizowanym fragmencie (z odmianą), więc tysiące wpisów nie wydłużają zapytań. Wybór wpisów przy 5000 pozycjach i fragmencie 2000 słów mieści się w teście w 3 s.
 
 ## Uwaga o modelu sprawdzającym
 

@@ -1,10 +1,11 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace TeamsCatcher.Core;
 
 // Tłumaczenie PL <-> EN lokalnymi modelami przez Ollamę (treść spotkania nie wychodzi z komputera), krzyżowo:
-// PL -> EN tłumaczy CheckModel (Qwen), sprawdza CorrectionModel (Llama); EN -> PL odwrotnie. Jeden model zawsze weryfikuje drugi.
+// PL -> EN tłumaczy CorrectionModel (LFM2, pisze po angielsku), sprawdza CheckModel; EN -> PL odwrotnie. Jeden model zawsze weryfikuje drugi.
+// Test Rick i Morty: MEMORYDistillPL jako tłumacz PL -> EN zostawił 21 ze 132 linii po polsku, 13 z tekstem innej wypowiedzi; LFM2 - 8.
 // hints: niezależne tłumaczenie mowy przez Whisper (-tr) dla tej samej wypowiedzi - podpowiedź sensu, gdy tekst PL ma błąd rozpoznawania.
 public static class Translator
 {
@@ -25,23 +26,41 @@ public static class Translator
         {
             var batch = texts.Skip(start).Take(BatchSize).ToList();
             var batchHints = hints?.Skip(start).Take(BatchSize).ToList();
-            var response = await Ollama.GenerateAsync(BuildPrompt(batch, from, to, batchHints), translator, s, ct, 8192, 2048);
+            var response = await Ollama.GenerateAsync(BuildPrompt(batch, from, to, batchHints), translator, s, ct, 2048);
             Array.Copy(ParseNumbered(response, batch.Count), 0, parsed, start, batch.Count);
         }
+        // linia bez tłumaczenia albo z polskim tekstem (swoim lub innej wypowiedzi) - jeszcze raz sama
+        for (var i = 0; i < texts.Count; i++)
+            if (Suspect(parsed[i], i, texts))
+                parsed[i] = ParseNumbered(await Ollama.GenerateAsync(BuildPrompt([texts[i]], from, to, hints == null ? null : [hints[i]]), translator, s, ct, 512), 1)[0];
         // weryfikacja: drugi model "czyta" oryginał i tłumaczenie obok siebie; brak linii w odpowiedzi = zostaje pierwsze tłumaczenie
         var result = new string?[texts.Count];
         for (var start = 0; start < texts.Count; start += BatchSize)
         {
             var batch = texts.Skip(start).Take(BatchSize).ToList();
             var translations = parsed.Skip(start).Take(BatchSize).ToList();
-            var verified = ParseNumbered(await Ollama.GenerateAsync(BuildVerifyPrompt(batch, translations, from, to), checker, s, ct, 8192, 2048), batch.Count);
-            for (var i = 0; i < batch.Count; i++) result[start + i] = PickVerified(batch[i], translations[i], verified[i]);
+            var verified = ParseNumbered(await Ollama.GenerateAsync(BuildVerifyPrompt(batch, translations, from, to), checker, s, ct, 2048), batch.Count);
+            for (var i = 0; i < batch.Count; i++)
+            {
+                var pick = PickVerified(batch[i], translations[i], Suspect(verified[i], start + i, texts) ? null : verified[i]);
+                // cudzy tekst po ponownej próbie = brak tłumaczenia (zostaje oryginał tej linii, nie słowa innej osoby)
+                result[start + i] = Suspect(pick, start + i, texts) ? null : pick;
+            }
         }
         return result;
     }
 
+    // Tłumaczenie powtarza słowa któregoś oryginału (>= 60%): nieprzetłumaczone albo przepisane z innej wypowiedzi.
+    // Krótkie linie (do 3 słów: "Morty!", "Okej.") mogą brzmieć tak samo w obu językach.
+    public static bool Suspect(string? translation, int index, IReadOnlyList<string> originals)
+    {
+        if (string.IsNullOrWhiteSpace(translation)) return true;
+        if (Regex.Matches(translation, @"\p{L}+").Count <= 3) return false;
+        return originals.Any(o => Overlap(translation, o) >= 0.6);
+    }
+
     public static (string Translator, string Checker) Models(string to, Settings s) =>
-        to == "en" ? (s.CheckModel, s.CorrectionModel) : (s.CorrectionModel, s.CheckModel);
+        to == "en" ? (s.CorrectionModel, s.CheckModel) : (s.CheckModel, s.CorrectionModel);
 
     // Wywiad TVN: notatki EN mówiły o "single doll", PL o filmie "Lalka" - tłumaczenie bez sprawdzenia rozjeżdża sens.
     // shortcut: spójność terminów sprawdzana w obrębie paczki (20 wypowiedzi), dla długich spotkań rozważyć słowniczek tłumaczeń.

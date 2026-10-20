@@ -115,18 +115,4 @@ public static class LiveChunks
     public static long OffsetMs(ChunkInfo chunk, double finalZero) => (long)Math.Round((chunk.Zero + chunk.From - finalZero) * 1000);
 
     public static TranscriptSegment Shift(TranscriptSegment s, long offsetMs) => s with { FromMs = s.FromMs + offsetMs, ToMs = s.ToMs + offsetMs };
-
-    // Notatki częściowe wszystkich kawałków (w kolejności) - kontekst dla notatki z całości.
-    public static string PartialNotes(string folder, string language)
-    {
-        var text = new StringBuilder();
-        foreach (var (info, chunk) in List(folder))
-        {
-            var path = Path.Combine(chunk, MeetingNotes.FileName(language));
-            if (!File.Exists(path)) continue;
-            var body = string.Join('\n', File.ReadAllLines(path).Where(l => !l.StartsWith("# ")));
-            text.Append($"[{TimeSpan.FromSeconds(info.From):h\\:mm\\:ss}-{TimeSpan.FromSeconds(info.To):h\\:mm\\:ss}]\n{body.Trim()}\n\n");
-        }
-        return text.ToString().Trim();
-    }
 }

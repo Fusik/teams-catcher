@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -46,10 +46,6 @@ public sealed class KnowledgeBase
         Regex.Matches(text, @"\[([^\]]+)\]").Select(m => m.Groups[1].Value.Split(" - ", StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
             .Where(p => p.Length >= 2)
             .Select(p => new KnowledgeEntry(p[0], p[^1], p.Length > 2 ? p[1..^1].ToList() : null)).ToList();
-
-    // Odwrotność Parse - jedna linia na wpis (edytor bazy w zakładce MODELS): "[termin - inny zapis - znaczenie]".
-    public static string Format(IEnumerable<KnowledgeEntry> entries) =>
-        string.Join(Environment.NewLine, entries.Select(e => $"[{string.Join(" - ", e.AllNames.Append(e.Meaning))}]"));
 
     public bool Knows(string word) => Entries.Any(e => e.AllNames.Any(n => SameWord(n, word)));
 

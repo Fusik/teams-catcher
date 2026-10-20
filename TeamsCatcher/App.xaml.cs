@@ -48,6 +48,7 @@ public partial class App : Application
         if (settings.StartWithWindows) Autostart.Apply(true, Environment.ProcessPath!); // exe mógł zostać przeniesiony
 
         _service = new CatcherService(settings, CatcherService.FindFfmpeg(), Log);
+        Ollama.Log = Log;
         _vm = new MainViewModel(settings, Settings.DefaultPath, _service);
         foreach (var line in _pendingLog) _vm.AddLog(line);
         _vm.AddLog(settings.AutoRecord ? "Waiting for a Teams call..." : "Automatic recording is off.");

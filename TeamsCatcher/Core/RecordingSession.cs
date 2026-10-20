@@ -177,7 +177,17 @@ public sealed class RecordingSession
 
     // Zrzut dźwięku w trakcie rozmowy (kawałki na żywo): transcript.wav całości do tej chwili, ten sam miks co na końcu.
     // Zero = bezwzględny czas najwcześniejszego dźwięku (sekundy od 1970) - do przeliczenia czasów na oś końcowego nagrania.
+    // Kawałki na żywo i transkrypcja na żywo robią zrzut w tle niezależnie - wspólny plik live_teams.wav, więc po jednym naraz.
+    readonly SemaphoreSlim _snapshotGate = new(1, 1);
+
     public async Task<double?> SnapshotTranscriptAsync(string output)
+    {
+        await _snapshotGate.WaitAsync();
+        try { return await SnapshotCoreAsync(output); }
+        finally { _snapshotGate.Release(); }
+    }
+
+    async Task<double?> SnapshotCoreAsync(string output)
     {
         // nagłówek WAV aktualny do bieżącej chwili; dalszy zapis trwa
         foreach (var (_, writer) in _audio.ToList()) lock (writer) writer.Flush();

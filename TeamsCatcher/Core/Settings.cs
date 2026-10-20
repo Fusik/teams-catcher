@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -11,10 +11,12 @@ public sealed class Settings
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "TeamsCatcher");
     public bool AutoRecord { get; set; } = true;
     public bool RecordMicrophone { get; set; } = true;
-    // Użytkownik wybiera wyniki: nagranie wideo (bez niego meeting.mp4 = sam dźwięk), transkrypcja (AutoTranscribe), notatka (WriteNotes).
+    // Użytkownik wybiera wyniki: nagranie wideo (bez niego meeting.mp4 = sam dźwięk), transkrypcja (AutoTranscribe), korekta i notatka po niej (CorrectTranscript, WriteNotes).
     public bool RecordVideo { get; set; } = true;
     // Kawałki w trakcie rozmowy co tyle minut (transkrypcja + notatka częściowa w dymku); 0 = tylko po rozmowie.
     public int LiveChunkMinutes { get; set; } = 5;
+    // podgląd transkrypcji w trakcie rozmowy (Whisper large-v3-turbo co ~30 s), widok "Live" w panelu RESULT
+    public bool LiveTranscript { get; set; } = true;
     public int Fps { get; set; } = 15;
     // Wysokość wideo (ramka 16:9): 1080 / 1440 / 2160.
     public int VideoHeight { get; set; } = 1080;
@@ -28,15 +30,22 @@ public sealed class Settings
     // Nazwiska, firmy, terminy (po przecinku) - podpowiedź dla Whispera i korekty; uzupełniana nazwami z pierwszego przebiegu.
     public string TranscriptGlossary { get; set; } = "";
     // Korekta zdań, w których Whisper był niepewny jakiegoś słowa.
-    public bool CorrectTranscript { get; set; } = true;
-    // Notatki ze spotkania (podsumowanie, decyzje, zadania) po polsku i po angielsku.
+    // kroki po transkrypcji, gdy zaznaczone w opcjach (Correct, Notes)
+    // Correct (dyskusja modeli tekstu nad transkrypcją) domyślnie wyłączony: notatka sama porównuje 3 rozpoznania mowy
+    public bool CorrectTranscript { get; set; }
     public bool WriteNotes { get; set; } = true;
+    // Notatki ze spotkania (podsumowanie, decyzje, zadania) po polsku i po angielsku.
     public string OllamaUrl { get; set; } = "http://127.0.0.1:11434";
+    // Copilot w przeglądarce (zakładka COPILOT): służbowy Microsoft 365; prywatny: https://copilot.microsoft.com
+    public string CopilotUrl { get; set; } = "https://m365.cloud.microsoft/chat";
    // Dwa modele tekstu z różnych rodzin, sprawdzające się krzyżowo (korekta, tłumaczenia, notatki); każdy mieści się w 6 GB VRAM.
     // Bielik 4.5B odrzucony: rozsypywał się przy notatkach i tłumaczeniach (test TVN).
-    public string CorrectionModel { get; set; } = "llama3.1:8b";
+    // małe modele (oba naraz w VRAM): test Rick i Morty - krok Correct 4:45 zamiast 8:46 z llama3.1:8b + qwen3.5:4b, jakość podobna
+    public string CorrectionModel { get; set; } = "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0";
     // Gemma 4 E2B zastąpiona: pomiar na 14 punktach notatek z nagrań - Gemma 10/14 i 2 zmyślenia przepuszczone, Qwen 3.5 4B 11/14 i 1.
-    public string CheckModel { get; set; } = "qwen3.5:4b";
+    public string CheckModel { get; set; } = "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0";
+    // jedyny model notatki (krok Notes): porównuje 3 rozpoznania mowy, pisze po polsku i po angielsku
+    public string NotesModel { get; set; } = "hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M";
     // Budżet VRAM na modele tekstu (MB); 0 = cała karta. Docelowy komputer: 6 GB. Mieszczą się oba = zostają w pamięci.
     public int VramBudgetMb { get; set; }
     public string WhisperCli { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "whisper-cli.exe");
@@ -44,8 +53,8 @@ public sealed class Settings
     // Druga hipoteza (inny model = inne błędy) dla korekty; brak pliku = bez drugiej hipotezy.
     public string WhisperAltModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "ggml-large-v3-turbo.bin");
     public string WhisperVadModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "ggml-silero-v5.1.2.bin");
-    // Trzecia hipoteza: NVIDIA Parakeet (inna architektura niż Whisper), parakeet-cli obok whisper-cli; brak pliku = bez niej.
-    public string ParakeetModel { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "ggml-parakeet-tdt-0.6b-v3-f16.bin");
+    // Wersja C rozpoznania mowy: Qwen3-ASR (asr.py w środowisku pyannote); model z Hugging Face przy pierwszym użyciu (~4 GB)
+    public string QwenAsrModel { get; set; } = "Qwen/Qwen3-ASR-1.7B";
     // Pisownia i gramatyka (LanguageTool na Javie); brak plików = bez sprawdzania.
     public string JavaExe { get; set; } = Path.Combine(AppContext.BaseDirectory, "jre", "bin", "java.exe");
     public string LanguageToolDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "languagetool");
@@ -88,13 +97,14 @@ public sealed class Settings
         if (string.IsNullOrWhiteSpace(s.WhisperModel) || s.WhisperModel.Contains('"')) s.WhisperModel = defaults.WhisperModel;
         if (string.IsNullOrWhiteSpace(s.WhisperVadModel) || s.WhisperVadModel.Contains('"')) s.WhisperVadModel = defaults.WhisperVadModel;
         if (s.WhisperAltModel == null || s.WhisperAltModel.Contains('"')) s.WhisperAltModel = defaults.WhisperAltModel;
-        if (s.ParakeetModel == null || s.ParakeetModel.Contains('"')) s.ParakeetModel = defaults.ParakeetModel;
+        if (string.IsNullOrWhiteSpace(s.QwenAsrModel) || s.QwenAsrModel.Contains('"')) s.QwenAsrModel = defaults.QwenAsrModel;
         if (string.IsNullOrWhiteSpace(s.JavaExe)) s.JavaExe = defaults.JavaExe;
         if (string.IsNullOrWhiteSpace(s.LanguageToolDir)) s.LanguageToolDir = defaults.LanguageToolDir;
         s.DebateRounds = Math.Clamp(s.DebateRounds, 1, 6);
         s.LiveChunkMinutes = Math.Clamp(s.LiveChunkMinutes, 0, 60);
         if (string.IsNullOrWhiteSpace(s.CorrectionModel)) s.CorrectionModel = defaults.CorrectionModel;
         if (string.IsNullOrWhiteSpace(s.CheckModel)) s.CheckModel = defaults.CheckModel;
+        if (string.IsNullOrWhiteSpace(s.NotesModel)) s.NotesModel = defaults.NotesModel;
         if (!Uri.TryCreate(s.OllamaUrl, UriKind.Absolute, out var ollama) || ollama.Scheme is not ("http" or "https")) s.OllamaUrl = defaults.OllamaUrl;
        s.TranscriptGlossary ??= "";
         if (string.IsNullOrWhiteSpace(s.DiarizationSegmentationModel)) s.DiarizationSegmentationModel = defaults.DiarizationSegmentationModel;
