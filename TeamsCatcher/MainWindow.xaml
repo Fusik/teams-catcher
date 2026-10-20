@@ -294,6 +294,76 @@
                     </StackPanel>
                 </Border>
             </TabItem>
+
+            <!-- Wszystko, co zmienia pracę modeli tekstu: zasady notatek, modele, rundy, język, baza wiedzy (słowniczek: TEAMS CALLS) -->
+            <TabItem Header="MODELS">
+                <Grid Height="300">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition Width="2*" />
+                    </Grid.ColumnDefinitions>
+                    <GroupBox Grid.Column="0" Margin="0,0,8,0">
+                        <GroupBox.Header>
+                            <TextBlock Text="NOTE RULES  ·  notes-rules.md" ToolTip="Instructions for the models: what each section (conclusions, decisions...) must and must not contain. Sent with every notes request." />
+                        </GroupBox.Header>
+                        <DockPanel>
+                            <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0" LastChildFill="False">
+                                <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Command="{Binding SaveRulesCommand}" Content="Save rules" />
+                                <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="10,4" Margin="0,0,8,0" Command="{Binding OpenRulesCommand}" Content="Open file" />
+                            </DockPanel>
+                            <TextBox Text="{Binding NotesRules, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                     VerticalScrollBarVisibility="Auto" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" Padding="6,4"
+                                     AutomationProperties.Name="Note rules" />
+                        </DockPanel>
+                    </GroupBox>
+                    <GroupBox Grid.Column="1" Margin="0">
+                        <GroupBox.Header>
+                            <TextBlock Text="TEXT MODELS AND KNOWLEDGE" />
+                        </GroupBox.Header>
+                        <DockPanel>
+                            <Grid DockPanel.Dock="Top">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="60" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition /><RowDefinition /><RowDefinition />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Style="{StaticResource Label}" Text="WRITER" ToolTip="Ollama model that writes: corrections, notes, translations (e.g. llama3.1:8b)" />
+                                <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding CorrectionModel, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Writer model" />
+                                <TextBlock Grid.Row="0" Grid.Column="2" Style="{StaticResource Label}" Text="ROUNDS" Margin="12,2,8,2" ToolTip="Discussion rounds per disputed sentence and note check rounds (1-6)" />
+                                <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding DebateRounds, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Discussion rounds" />
+                                <TextBlock Grid.Row="1" Style="{StaticResource Label}" Text="CHECKER" ToolTip="Ollama model that checks the writer (different family = cross-check; e.g. qwen3.5:4b)" />
+                                <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CheckModel, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="Checker model" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource Label}" Text="VRAM MB" Margin="12,2,8,2" ToolTip="Memory budget for text models; 0 = whole graphics card. Both fit = both stay loaded (faster)." />
+                                <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding VramBudgetMb, UpdateSourceTrigger=LostFocus}" Margin="0,2" AutomationProperties.Name="VRAM budget in MB" />
+                                <TextBlock Grid.Row="2" Style="{StaticResource Label}" Text="LANGUAGE" ToolTip="Language of the conversation: auto = chosen per channel (PL/EN)" />
+                                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,2">
+                                    <ToggleButton x:Name="LanguageToggle" AutomationProperties.Name="Conversation language" Padding="10,3" Foreground="{StaticResource WF.Brush.Blue100}" Background="#332F7BFF"
+                                                  BorderBrush="{StaticResource WF.Brush.Blue300}">
+                                        <TextBlock Text="{Binding TranscriptLanguage, StringFormat={}{0} ▾}" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" />
+                                    </ToggleButton>
+                                    <Popup IsOpen="{Binding IsChecked, ElementName=LanguageToggle, Mode=TwoWay}" PlacementTarget="{Binding ElementName=LanguageToggle}"
+                                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True" MinWidth="80">
+                                        <ListBox x:Name="LanguageList" ItemsSource="{Binding LanguageOptions}" SelectionChanged="LanguageList_SelectionChanged" />
+                                    </Popup>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource Label}" Text="KNOWLEDGE BASE  ·  [term - other spelling - meaning], [misheard - =correct]" Margin="0,8,0,4"
+                                       TextTrimming="CharacterEllipsis" ToolTip="Explanations the models use to understand terms; one entry per line. Same file as TO CLARIFY saves to." />
+                            <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="10,4" Margin="8,0,0,0" Command="{Binding SaveKnowledgeTextCommand}" Content="Save knowledge" />
+                                <TextBlock Text="{Binding ModelsStatus}" VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}" TextWrapping="Wrap" />
+                            </DockPanel>
+                            <TextBox Text="{Binding KnowledgeText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="NoWrap" VerticalContentAlignment="Top"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="{StaticResource WF.Font.Mono}" FontSize="12" Padding="6,4"
+                                     AutomationProperties.Name="Knowledge base" />
+                        </DockPanel>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
             </TabControl>
 
             <!-- Ostatnie nagrania -->

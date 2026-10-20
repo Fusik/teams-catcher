@@ -70,6 +70,14 @@ public partial class MainWindow : Window
         SpeakersList.SelectedIndex = -1;
     }
 
+    void LanguageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.AddedItems.Count == 0) return;
+        Vm.TranscriptLanguage = (string)e.AddedItems[0]!;
+        LanguageToggle.IsChecked = false;
+        LanguageList.SelectedIndex = -1;
+    }
+
     void RecordingList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (e.AddedItems.Count == 0) return;

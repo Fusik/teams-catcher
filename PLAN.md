@@ -376,6 +376,7 @@ Wnioski:
     - poprawka po teście: sprzątanie cache uv (pliki tylko do odczytu) wywalało całą instalację;
     - test paczki (zip 0,22 GB, folder 0,48 GB, rozpakowany do czystego folderu): pierwszy start = okno Components z 8 składnikami (9,1 GB; Ollama i modele pominięte, bo Ollama użytkownika działa), wszystkie "Ready" w < 10 min; drugi start bez okna; import 55 s nagrania przez VIDEO FILE: cały potok 5:40 (pyannote pierwszy raz 3:09 - rozruch Pythona), notatki 45 s;
     - poprawki z testu: przyciski z ikoną nie miały nazwy dla czytników ekranu (``AutomationProperties.Name``), treść zakładek była niewidoczna dla UI Automation (``PART_SelectedContentHost`` w szablonie TabControl); po instalacji zostaje pusty ``downloads\uv\python``.
+18. Zasady notatek ``notes-rules.md`` (instrukcja dla modeli: co ma zawierać każda sekcja, zwłaszcza wnioski) trafiają do list, kontroli i poprawek notatek; zakładka MODELS: edytor zasad, modele WRITER/CHECKER, rundy, budżet VRAM, język, edytor bazy wiedzy. Testy 188/188. Qwen 3.5 na GPU (33/33 warstwy), ale bez ponownego użycia cache promptu (model hybrydowy) - każda kontrola od nowa czyta fragment transkrypcji.
 17. UI: panel NOTES z regulowaną szerokością (GridSplitter, kolumny proporcjonalne, min. 800 + 300 px, okno min. 1140 px), listy rozwijane z ciemnym hoverem (domyślny styl ToggleButton w motywie).
 ---
 

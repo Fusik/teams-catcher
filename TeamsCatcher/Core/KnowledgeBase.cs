@@ -47,6 +47,10 @@ public sealed class KnowledgeBase
             .Where(p => p.Length >= 2)
             .Select(p => new KnowledgeEntry(p[0], p[^1], p.Length > 2 ? p[1..^1].ToList() : null)).ToList();
 
+    // Odwrotność Parse - jedna linia na wpis (edytor bazy w zakładce MODELS): "[termin - inny zapis - znaczenie]".
+    public static string Format(IEnumerable<KnowledgeEntry> entries) =>
+        string.Join(Environment.NewLine, entries.Select(e => $"[{string.Join(" - ", e.AllNames.Append(e.Meaning))}]"));
+
     public bool Knows(string word) => Entries.Any(e => e.AllNames.Any(n => SameWord(n, word)));
 
     // Pojęcia występujące w tekście (z odmianą: pierwsze litery każdego słowa nazwy) - tylko one trafiają do promptu.

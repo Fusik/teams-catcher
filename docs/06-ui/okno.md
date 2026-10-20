@@ -36,6 +36,14 @@ Styl WF BIM (`Assets\WF`, `Themes\WfTheme.xaml`): ciemny motyw, własny pasek ty
 
 Przycisk "Choose video or audio file..." albo przeciągnięcie plików ([03-transcription/import-wideo.md](../03-transcription/import-wideo.md)).
 
+## Zakładka MODELS
+
+Wszystko, co zmienia pracę modeli tekstu ([04-notes/zasady-notatek.md](../04-notes/zasady-notatek.md)):
+- **NOTE RULES:** edytor `notes-rules.md` (zasady notatek), "Save rules", "Open file";
+- **TEXT MODELS AND KNOWLEDGE:**
+  - WRITER, CHECKER (modele Ollamy), ROUNDS (1-6), VRAM MB (0 = cała karta), LANGUAGE (auto/pl/en);
+  - edytor bazy wiedzy (jedna linia na wpis) i "Save knowledge".
+
 ## Sekcja RECORDING
 
 - **Lista nagrań:** rozwijana, 10 ostatnich (nazwa, rozmiar, "transcript" / "not finalized"). Wybór nagrania ustawia, czego dotyczą TO CLARIFY i NOTES. Wybór zostaje po odświeżeniu listy.

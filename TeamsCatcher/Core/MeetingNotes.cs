@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace TeamsCatcher.Core;
@@ -26,6 +27,23 @@ public static class MeetingNotes
     public sealed record Notes(Dictionary<Section, List<string>> Sections, List<(string Time, string Text)> Topics);
 
     public static string FileName(string language) => $"notes.{language}.md";
+
+    // Zasady notatek od użytkownika (notes-rules.md obok exe, edycja w zakładce MODELS): trafiają do list, kontroli i poprawek.
+    public static string RulesPath => Path.Combine(AppContext.BaseDirectory, "notes-rules.md");
+    const int MaxRulesChars = 6000;
+
+    // Bez komentarzy <!-- --> i z limitem długości (każde zapytanie o notatkę je zawiera); brak pliku = bez zasad.
+    public static string LoadRules(string? path = null)
+    {
+        path ??= RulesPath;
+        if (!File.Exists(path)) return "";
+        var text = Regex.Replace(File.ReadAllText(path), @"<!--.*?-->", "", RegexOptions.Singleline).Trim();
+        return text.Length > MaxRulesChars ? text[..MaxRulesChars] : text;
+    }
+
+    static string Rules(string language, string rules) => rules.Length == 0 ? "" : language == "pl"
+        ? $"Zasady notatki od użytkownika (obowiązują przy pisaniu i sprawdzaniu):\n{rules}\n\n"
+        : $"User's rules for the notes (apply them when writing and checking; they may be written in Polish):\n{rules}\n\n";
 
     static readonly Dictionary<string, Dictionary<Section, string>> Headings = new()
     {
@@ -68,6 +86,7 @@ public static class MeetingNotes
         KnowledgeBase? kb = null, IReadOnlyList<Section>? sections = null, string context = "")
     {
         var wanted = sections ?? Full;
+        var rules = LoadRules();
         var chunks = Chunk(transcript, ChunkChars);
         var history = new StringBuilder();
         // objaśnienia użytkownika dla pojęć z każdej części (baza wiedzy) + notatki częściowe jako kontekst
@@ -80,7 +99,7 @@ public static class MeetingNotes
         var pending = new List<Candidate>();
         foreach (var section in wanted)
             for (var k = 0; k < chunks.Count; k++)
-                pending.AddRange(Bullets(await Ollama.GenerateAsync(ListPrompt(section, language, chunks[k], known[k]), s.CorrectionModel, s, ct, ContextTokens, 400))
+                pending.AddRange(Bullets(await Ollama.GenerateAsync(ListPrompt(section, language, chunks[k], known[k], rules), s.CorrectionModel, s, ct, ContextTokens, 400))
                     .Where(b => Usable(b, chunks[k])).Take(MaxPerChunk).Select(b => new Candidate(section, k, b)));
 
         log?.Invoke($"  step: notes lists ({chunks.Count} parts x {wanted.Count} sections, {s.CorrectionModel}) -> {pending.Count} points");
@@ -94,7 +113,7 @@ public static class MeetingNotes
             foreach (var group in pending.GroupBy(c => (c.Section, c.Chunk)))
             {
                 var items = group.ToList();
-                var answers = Translator.ParseNumbered(await Ollama.GenerateAsync(CheckBatchPrompt(group.Key.Section, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), language, known[group.Key.Chunk]),
+                var answers = Translator.ParseNumbered(await Ollama.GenerateAsync(CheckBatchPrompt(group.Key.Section, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), language, known[group.Key.Chunk], rules),
                     s.CheckModel, s, ct, ContextTokens, 8 * items.Count + 16), items.Count);
                 for (var i = 0; i < items.Count; i++)
                 {
@@ -119,7 +138,7 @@ public static class MeetingNotes
             foreach (var group in rejected.GroupBy(c => (c.Section, c.Chunk)))
             {
                 var items = group.ToList();
-                var fixes = Translator.ParseNumbered(await Ollama.GenerateAsync(FixBatchPrompt(language, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), known[group.Key.Chunk]),
+                var fixes = Translator.ParseNumbered(await Ollama.GenerateAsync(FixBatchPrompt(language, chunks[group.Key.Chunk], items.Select(c => c.Text).ToList(), known[group.Key.Chunk], rules),
                     s.CorrectionModel, s, ct, ContextTokens, 80 * items.Count), items.Count);
                 for (var i = 0; i < items.Count; i++)
                 {
@@ -233,12 +252,12 @@ public static class MeetingNotes
         });
     }
 
-    static string ListPrompt(Section section, string language, string transcript, string known = "") => language == "pl"
-        ? Known(language, known) + $"Oto transkrypcja rozmowy. Wypisz {Ask(section, language)}. Każdy punkt w osobnej linii zaczynającej się od \"- \", krótko, po polsku. " +
+    static string ListPrompt(Section section, string language, string transcript, string known = "", string rules = "") => language == "pl"
+        ? Rules(language, rules) + Known(language, known) + $"Oto transkrypcja rozmowy. Wypisz {Ask(section, language)}. Każdy punkt w osobnej linii zaczynającej się od \"- \", krótko, po polsku. " +
           "Tylko to, co wprost jest w transkrypcji - nie dopowiadaj, nie cytuj wypowiedzi, bez etykiet typu \"Decyzja:\". " +
           "\"Ja\" to autor notatki, \"Rozmówca 1\", \"Rozmówca 2\" itd. to inni uczestnicy; " +
           "jeśli ktoś przedstawia się z imienia, użyj imienia. Jeśli nic takiego nie ma, odpowiedz: - brak\n\n## TRANSKRYPCJA\n" + transcript
-        : Known(language, known) + $"Here is a conversation transcript. List {Ask(section, language)}. One short point per line starting with \"- \", in English. " +
+        : Rules(language, rules) + Known(language, known) + $"Here is a conversation transcript. List {Ask(section, language)}. One short point per line starting with \"- \", in English. " +
           "Only what the transcript directly says - do not invent, do not quote, no labels like \"Decision:\". " +
           "\"Me\" is the author of the notes, \"Speaker 1\", \"Speaker 2\" etc. are the other participants; " +
           "if someone introduces themselves, use their name. If there is nothing like that, answer: - none\n\n## TRANSCRIPT\n" + transcript;
@@ -246,8 +265,8 @@ public static class MeetingNotes
     // Kontrola w języku notatki (dyskusja modeli zawsze w języku rozmowy). Pytanie zależy od sekcji: TVN - "decyzje"
     // i "zadania" były zwykłymi faktami i cytatami, a samo "czy transkrypcja to potwierdza" je przepuszczało.
     // Transkrypcja na początku promptu: kolejne zapytania o tę samą część zaczynają się tak samo, więc Ollama używa ponownie jej obliczeń.
-    public static string CheckBatchPrompt(Section section, string transcript, IReadOnlyList<string> statements, string language = "en", string known = "") =>
-        (language == "pl" ? "## TRANSKRYPCJA\n" : "## TRANSCRIPT\n") + transcript + "\n\n" + Known(language, known) + (language, section) switch
+    public static string CheckBatchPrompt(Section section, string transcript, IReadOnlyList<string> statements, string language = "en", string known = "", string rules = "") =>
+        (language == "pl" ? "## TRANSKRYPCJA\n" : "## TRANSCRIPT\n") + transcript + "\n\n" + Known(language, known) + Rules(language, rules) + (language, section) switch
         {
             ("pl", Section.Decisions) => "Dla każdego numerowanego punktu: czy z transkrypcji wynika, że uczestnicy wyraźnie podjęli tę decyzję (uzgodnili albo postanowili), a nie tylko wspomnieli fakt?",
             ("pl", Section.Assumptions) => "Dla każdego numerowanego punktu: czy z transkrypcji wynika, że uczestnicy przyjęli to założenie (traktują je jako dane)?",
@@ -264,11 +283,11 @@ public static class MeetingNotes
         } + (language == "pl" ? " Odpowiedz jedną linią na punkt: numer i TAK albo NIE, nic więcej.\n\n" : " Answer with one line per statement: the number and YES or NO, nothing else.\n\n") +
         string.Concat(statements.Select((x, i) => $"{i + 1}. {x}\n"));
 
-    public static string FixBatchPrompt(string language, string transcript, IReadOnlyList<string> statements, string known = "") => (language == "pl"
-        ? "## TRANSKRYPCJA\n" + transcript + "\n\n" + Known(language, known) + "Te numerowane punkty notatki nie zgadzają się z transkrypcją. Napisz każdy od nowa tak, żeby mówił tylko to, " +
+    public static string FixBatchPrompt(string language, string transcript, IReadOnlyList<string> statements, string known = "", string rules = "") => (language == "pl"
+        ? "## TRANSKRYPCJA\n" + transcript + "\n\n" + Known(language, known) + Rules(language, rules) + "Te numerowane punkty notatki nie zgadzają się z transkrypcją. Napisz każdy od nowa tak, żeby mówił tylko to, " +
           "co wprost jest w transkrypcji, krótko, po polsku, bez cytatów. Jeśli transkrypcja w ogóle tego nie mówi, napisz: brak. " +
           "Odpowiedz numerowanymi liniami, jedna na punkt.\n\n"
-        : "## TRANSCRIPT\n" + transcript + "\n\n" + Known(language, known) + "These numbered notes do not match the transcript. Rewrite each so it says only what the transcript " +
+        : "## TRANSCRIPT\n" + transcript + "\n\n" + Known(language, known) + Rules(language, rules) + "These numbered notes do not match the transcript. Rewrite each so it says only what the transcript " +
           "directly says, briefly, in English, without quotes. If the transcript does not say it at all, write: none. " +
           "Answer with numbered lines, one per note.\n\n")
         + string.Concat(statements.Select((x, i) => $"{i + 1}. {x}\n"));

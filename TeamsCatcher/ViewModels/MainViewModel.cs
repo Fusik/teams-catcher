@@ -66,6 +66,12 @@ public sealed class MainViewModel : ObservableObject
         SaveKnowledgeCommand = RedoCommand;
         OpenNotesCommand = new RelayCommand(() => { if (NotesPath() is { } p) Process.Start(new ProcessStartInfo(p) { UseShellExecute = true }); });
         ImportVideoCommand = new RelayCommand(ChooseVideo);
+        SaveRulesCommand = new RelayCommand(SaveRules);
+        OpenRulesCommand = new RelayCommand(() => { if (File.Exists(MeetingNotes.RulesPath)) Process.Start(new ProcessStartInfo(MeetingNotes.RulesPath) { UseShellExecute = true }); });
+        SaveKnowledgeTextCommand = new RelayCommand(SaveKnowledgeText);
+        try { _notesRules = File.Exists(MeetingNotes.RulesPath) ? File.ReadAllText(MeetingNotes.RulesPath) : ""; }
+        catch (IOException e) { AddLog($"Notes rules not read: {e.Message}"); }
+        _knowledgeText = KnowledgeBase.Format(KnowledgeBase.Load(KnowledgeBase.DefaultPath).Entries);
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         timer.Tick += (_, _) => Refresh();
         timer.Start();
@@ -132,6 +138,75 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand<RecordingItem> OpenRecordingCommand { get; }
     public RelayCommand<RecordingItem> TranscribeCommand { get; }
     public RelayCommand ImportVideoCommand { get; }
+
+    // --- zakładka MODELS: wszystko, co zmienia pracę modeli tekstu ---
+    public RelayCommand SaveRulesCommand { get; }
+    public RelayCommand OpenRulesCommand { get; }
+    public RelayCommand SaveKnowledgeTextCommand { get; }
+    string _notesRules = "", _knowledgeText = "", _modelsStatus = "";
+    // notes-rules.md: zasady, jak powstają notatki (wnioski, decyzje...) - trafiają do każdego zapytania o notatkę
+    public string NotesRules { get => _notesRules; set => Set(ref _notesRules, value); }
+    // knowledge.json jako tekst: jedna linia na wpis "[termin - inny zapis - znaczenie]"
+    public string KnowledgeText { get => _knowledgeText; set => Set(ref _knowledgeText, value); }
+    public string ModelsStatus { get => _modelsStatus; private set => Set(ref _modelsStatus, value); }
+    public string[] LanguageOptions { get; } = ["auto", "pl", "en"];
+
+    public string CorrectionModel
+    {
+        get => _settings.CorrectionModel;
+        set { if (value.Trim().Length > 0) { _settings.CorrectionModel = value.Trim(); SaveSettings(); } OnPropertyChanged(); }
+    }
+
+    public string CheckModel
+    {
+        get => _settings.CheckModel;
+        set { if (value.Trim().Length > 0) { _settings.CheckModel = value.Trim(); SaveSettings(); } OnPropertyChanged(); }
+    }
+
+    public int DebateRounds
+    {
+        get => _settings.DebateRounds;
+        set { _settings.DebateRounds = Math.Clamp(value, 1, 6); SaveSettings(); OnPropertyChanged(); }
+    }
+
+    public int VramBudgetMb
+    {
+        get => _settings.VramBudgetMb;
+        set { _settings.VramBudgetMb = Math.Max(0, value); SaveSettings(); OnPropertyChanged(); }
+    }
+
+    public string TranscriptLanguage
+    {
+        get => _settings.TranscriptLanguage;
+        set { _settings.TranscriptLanguage = value; SaveSettings(); OnPropertyChanged(); }
+    }
+
+    void SaveRules()
+    {
+        try
+        {
+            File.WriteAllText(MeetingNotes.RulesPath, NotesRules);
+            ModelsStatus = $"Notes rules saved ({DateTime.Now:HH:mm}) - used from the next notes; old recording: Redo after clarification.";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ModelsStatus = $"Not saved: {e.Message}"; }
+    }
+
+    // Cała baza wiedzy z edytora (zastępuje plik); linie bez nawiasów [ ] albo bez znaczenia są pomijane.
+    void SaveKnowledgeText()
+    {
+        var entries = KnowledgeBase.Parse(KnowledgeText);
+        var kb = KnowledgeBase.Load(KnowledgeBase.DefaultPath);
+        kb.Entries = entries;
+        try { kb.Save(KnowledgeBase.DefaultPath); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            ModelsStatus = $"Knowledge base not saved: {e.Message}";
+            return;
+        }
+        KnowledgeText = KnowledgeBase.Format(entries);
+        ModelsStatus = $"Knowledge base saved: {entries.Count} entries.";
+        LoadQuestions();
+    }
 
     // Transkrypcja dowolnych plików wideo/audio (przycisk albo przeciągnięcie na zakładkę).
     public void ImportVideos(IEnumerable<string> files)

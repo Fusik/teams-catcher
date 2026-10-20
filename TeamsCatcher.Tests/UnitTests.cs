@@ -1126,3 +1126,47 @@ public class ComponentsTests : IDisposable
         }
     }
 }
+public class NotesRulesTests
+{
+    [Fact]
+    public void Rules_file_drops_comments_and_reaches_the_note_prompts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "tc_rules_" + Guid.NewGuid().ToString("N") + ".md");
+        try
+        {
+            File.WriteAllText(path, "<!-- tylko dla ludzi -->\n## Wnioski\n- Wniosek musi wynikać z rozmowy.");
+            var rules = MeetingNotes.LoadRules(path);
+            Assert.DoesNotContain("tylko dla ludzi", rules);
+            Assert.StartsWith("## Wnioski", rules);
+            var check = MeetingNotes.CheckBatchPrompt(MeetingNotes.Section.Conclusions, "[0:00:01] Ja: tekst", ["punkt"], "pl", "", rules);
+            Assert.Contains("Wniosek musi wynikać z rozmowy.", check);
+            Assert.StartsWith("## TRANSKRYPCJA", check); // transkrypcja dalej na początku (wspólny początek zapytań)
+            Assert.Contains("Wniosek musi wynikać z rozmowy.", MeetingNotes.FixBatchPrompt("pl", "x", ["punkt"], "", rules));
+            Assert.Equal("", MeetingNotes.LoadRules(path + ".missing"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Shipped_rules_file_describes_every_section()
+    {
+        var text = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "notes-rules.md"));
+        foreach (var heading in new[] { "Podsumowanie", "Założenia", "Wnioski", "Decyzje", "Zadania", "Otwarte kwestie" }) Assert.Contains(heading, text);
+    }
+
+    [Fact]
+    public void Knowledge_base_text_round_trips_through_the_editor_format()
+    {
+        List<KnowledgeEntry> entries =
+        [
+            new("konsa", "budynek z gry, gdzie zdobywa się anioły", ["consa"]),
+            new("diamentowy", "=diamentowy", ["Jamentowy"]),
+            new("SP", "siła czarów"),
+        ];
+        var parsed = KnowledgeBase.Parse(KnowledgeBase.Format(entries));
+        Assert.Equal(entries.Select(e => (e.Term, e.Meaning, string.Join("|", e.Aliases ?? []))), parsed.Select(e => (e.Term, e.Meaning, string.Join("|", e.Aliases ?? []))));
+    }
+}

@@ -25,6 +25,8 @@
     <!-- diaryzacja pyannote (Python) - plik obok exe, także w wersji single-file -->
     <None Include="diarize.py" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Include="pyannote-requirements.txt" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <!-- zasady notatek (edycja w zakładce MODELS); PreserveNewest: kopia w bin nadpisywana tylko, gdy plik w repo jest nowszy -->
+    <None Include="notes-rules.md" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 
   <ItemGroup>
