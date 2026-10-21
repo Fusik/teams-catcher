@@ -30,6 +30,10 @@ public sealed class AudioTrack
     public string File { get; set; } = "";
     public int Pid { get; set; }
     public double? Start { get; set; }
+    // ścieżka z dźwiękiem całego urządzenia (z blokadą obcego dźwięku), zamiast ścieżek po procesach Teams
+    public bool Device { get; set; }
+    // najgłośniejsza próbka od ostatniego odczytu (0-1) - do logu poziomów; pole, więc nie trafia do session.json
+    public float Peak;
 }
 
 public sealed class VideoSegment
@@ -87,6 +91,7 @@ public sealed class RecordingSession
         session._micMuted = micMuted;
         session.Info.Started = started;
         session.Info.Title = window?.Title ?? "";
+        session.StartDeviceAudio(settings.TeamsProcess);
         session.AddTeamsAudio(teamsAudioPids);
         if (settings.RecordMicrophone) session.StartMic();
         if (window != null && settings.RecordVideo) session.StartVideo(new CaptureTarget(window.Handle, 0) { Name = window.Title });
@@ -98,12 +103,46 @@ public sealed class RecordingSession
     // Każdy proces osobno; nowe procesy z dźwiękiem (np. po dołączeniu rozmówcy) dochodzą w trakcie rozmowy.
     public void AddTeamsAudio(IEnumerable<int> pids)
     {
+        if (Info.TeamsAudio.Any(t => t.Device)) return; // dźwięk urządzenia już jest (procesowy loopback Teams bywa głuchy na głos rozmówców)
         foreach (var pid in pids)
         {
             if (Info.TeamsAudio.Any(t => t.Pid == pid)) continue;
             var track = new AudioTrack { File = $"teams_{pid}.wav", Pid = pid };
             Info.TeamsAudio.Add(track);
             StartAudio(track, _cts.Token);
+        }
+    }
+
+    // Dźwięk rozmówców Teams z całego urządzenia odtwarzania (loopback): process loopback na procesach Teams nie słyszy głosu rozmówców (test z telefonem:
+    // cisza przy włączonym i wyciszonym mikrofonie, a loopback urządzenia ma ten głos). Obcy dźwięk (YouTube) jest zerowany przez ForeignAudioGate.
+    // Brak urządzenia albo błąd = zostają ścieżki po procesach (AddTeamsAudio).
+    void StartDeviceAudio(string teamsProcess)
+    {
+        try
+        {
+            using var devices = new MMDeviceEnumerator();
+            var capture = new WasapiLoopbackCapture(ForeignAudioGate.DefaultRender(devices));
+            var gate = new ForeignAudioGate(teamsProcess);
+            gate.Changed += _log;
+            var track = new AudioTrack { File = "teams_device.wav", Pid = 0, Device = true };
+            var writer = new WaveFileWriter(Path.Combine(Folder, track.File), capture.WaveFormat);
+            var stopped = new TaskCompletionSource();
+            capture.DataAvailable += (_, e) =>
+            {
+                track.Start ??= Now;
+                if (gate.ForeignAudible) Array.Clear(e.Buffer, 0, e.BytesRecorded);
+                track.Peak = Math.Max(track.Peak, Peak(e.Buffer, e.BytesRecorded, capture.WaveFormat));
+                lock (writer) writer.Write(e.Buffer, 0, e.BytesRecorded);
+            };
+            capture.RecordingStopped += (_, _) => stopped.TrySetResult();
+            _cts.Token.Register(() => capture.StopRecording());
+            capture.StartRecording();
+            Info.TeamsAudio.Add(track);
+            _audio.Add((stopped.Task.ContinueWith(_ => { capture.Dispose(); gate.Dispose(); }), writer));
+        }
+        catch (Exception e) when (e is System.Runtime.InteropServices.COMException or InvalidOperationException or IOException)
+        {
+            _log($"Device audio not recorded, using Teams processes: {e.Message}");
         }
     }
 
@@ -133,6 +172,7 @@ public sealed class RecordingSession
         var task = ProcessLoopback.CaptureAsync(track.Pid, (buffer, count) =>
         {
             track.Start ??= Now;
+            track.Peak = Math.Max(track.Peak, Peak(buffer, count, null));
             // blokada: zrzut kawałka w trakcie rozmowy robi Flush z innego wątku
             lock (writer) writer.Write(buffer, 0, count);
         }, ct);
@@ -145,6 +185,32 @@ public sealed class RecordingSession
         catch (ArgumentException) { return pid.ToString(); }
     }
 
+    float _micPeak;
+
+    // Najgłośniejsza próbka bufora (0-1); null = 16-bit PCM (process loopback), inaczej format mikrofonu (zwykle float).
+    static float Peak(byte[] buffer, int count, WaveFormat? format)
+    {
+        float peak = 0;
+        if (format?.Encoding == WaveFormatEncoding.IeeeFloat)
+            for (var i = 0; i + 4 <= count; i += 4) peak = Math.Max(peak, Math.Abs(BitConverter.ToSingle(buffer, i)));
+        else
+            for (var i = 0; i + 2 <= count; i += 2) peak = Math.Max(peak, Math.Abs(BitConverter.ToInt16(buffer, i)) / 32768f);
+        return peak;
+    }
+
+    // Poziomy od ostatniego wywołania (do logu co 30 s): kto z Teams dał dźwięk, czy mikrofon żyje (przed wyciszeniem Teams) i czy w ogóle jest dźwięk rozmówców.
+    public string TakeLevels()
+    {
+        static string Db(float peak) => peak < 0.0003f ? "silent" : $"{20 * Math.Log10(peak):F0} dB";
+        var tracks = Info.TeamsAudio.Concat(Info.SharedAudio).ToList();
+        var parts = tracks.Select(t => $"{(Info.SharedAudio.Contains(t) ? "shared" : "teams")} {t.Pid} {(t.Start == null ? "no data yet" : Db(t.Peak))}").ToList();
+        var any = tracks.Any(t => t.Peak >= 0.0003f);
+        foreach (var t in tracks) t.Peak = 0;
+        var mic = _micPeak;
+        _micPeak = 0;
+        return $"{(parts.Count > 0 ? string.Join(", ", parts) : "no Teams audio process yet")}; mic {Db(mic)}{(any ? "" : "  <- NO MEETING AUDIO in this period")}";
+    }
+
     void StartMic()
     {
         try
@@ -155,6 +221,7 @@ public sealed class RecordingSession
             mic.DataAvailable += (_, e) =>
             {
                 Info.MicStart ??= Now;
+                _micPeak = Math.Max(_micPeak, Peak(e.Buffer, e.BytesRecorded, mic.WaveFormat));
                 // wyciszony w Teams = cisza zamiast głosu (oś czasu zostaje)
                 if (_micMuted()) Array.Clear(e.Buffer, 0, e.BytesRecorded);
                 lock (writer) writer.Write(e.Buffer, 0, e.BytesRecorded);

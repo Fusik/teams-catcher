@@ -37,6 +37,32 @@ public sealed class IntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Foreign_audio_gate_ignores_the_teams_family_and_flags_other_processes()
+    {
+        using var gate = new ForeignAudioGate("ffplay");
+        await Task.Delay(1000);
+        if (gate.ForeignAudible) return; // na komputerze gra coś obcego (YouTube): test nie ma czystego tła
+
+        Play("TeamsLike", "sine=frequency=440:sample_rate=48000", window: false); // ffplay udaje Teams
+        await Task.Delay(1500);
+        // obcy dźwięk w tle (YouTube) bywa przerywany - bez czystego tła nie ma czego sprawdzać
+        if (TeamsProcesses.AudibleSessions("ffplay", []).Contains("NOT Teams family") || gate.ForeignAudible) return;
+        Assert.False(gate.ForeignAudible, "tone from the Teams-like process must not count as foreign");
+
+        // obcy proces z dźwiękiem (PowerShell odtwarza dźwięk systemowy ~2 s)
+        var other = Process.Start(new ProcessStartInfo("powershell", "-NoProfile -Command \"1..3 | ForEach-Object { (New-Object Media.SoundPlayer 'C:/Windows/Media/tada.wav').PlaySync() }\"")
+            { UseShellExecute = false, CreateNoWindow = true })!;
+        _processes.Add(other);
+        var flagged = false;
+        for (var i = 0; i < 80 && !flagged; i++)
+        {
+            await Task.Delay(100);
+            flagged = gate.ForeignAudible;
+        }
+        Assert.True(flagged, "sound from another process should be flagged");
+    }
+
+    [Fact]
     public async Task Audio_pids_finds_process_with_audio_session()
     {
         var player = Play("Pids", "sine=frequency=440:sample_rate=48000", window: false);
@@ -82,9 +108,15 @@ public sealed class IntegrationTests : IDisposable
     [Fact]
     public async Task Full_session_produces_mp4_and_transcript()
     {
+        // ścieżka Teams to dźwięk urządzenia z blokadą obcego dźwięku: gdy na komputerze gra coś spoza "Teams" (YouTube), ton byłby zerowany
+        using (var gate = new ForeignAudioGate("ffplay"))
+        {
+            await Task.Delay(1500);
+            if (gate.ForeignAudible) return;
+        }
         var player = Play("Meeting", "testsrc2=s=640x360:r=30", window: true, audio: "sine=frequency=440:sample_rate=48000");
         var window = await WaitForWindow("Meeting");
-        var settings = new Settings { OutputFolder = _dir, Fps = 15, RecordMicrophone = true };
+        var settings = new Settings { OutputFolder = _dir, Fps = 15, RecordMicrophone = true, TeamsProcess = "ffplay" };
 
         var session = RecordingSession.Start(settings, "ffmpeg", [player.Id], window, () => false, _log.Add);
         await Task.Delay(5000);

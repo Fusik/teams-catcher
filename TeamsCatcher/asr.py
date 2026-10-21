@@ -19,18 +19,28 @@ with wave.open(wav_path, "rb") as w:
 with open(segments_path, encoding="utf-8") as f:
     segments = json.load(f)
 
+# Whisper bywa, że oddaje jedno "zdanie" na minuty (ciągła mowa, muzyka, pętla halucynacji): taki fragment naraz dał 26 GB RAM i godziny liczenia,
+# dlatego fragment dłuższy niż MAX_PIECE_S jest cięty na okna i sklejany z powrotem (owner[i] = zdanie, do którego należy okno).
+MAX_PIECE_S = 30.0
 pieces = []
-for start, end in segments:
+owner = []
+for n, (start, end) in enumerate(segments):
     # bardzo krótkie zdanie ("Tak.") z zapasem - model potrzebuje trochę dźwięku wokół słowa
-    a = max(0, int((start - 0.2) * rate))
-    b = min(len(audio), int((max(end, start + 0.8) + 0.2) * rate))
-    pieces.append((audio[a:b], rate))
+    first = max(0, int((start - 0.2) * rate))
+    last = min(len(audio), int((max(end, start + 0.8) + 0.2) * rate))
+    step = int(MAX_PIECE_S * rate)
+    for a in range(first, last, step):
+        pieces.append((audio[a:min(a + step, last)], rate))
+        owner.append(n)
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 model = Qwen3ASRModel.from_pretrained(model_id, dtype=torch.bfloat16 if device != "cpu" else torch.float32, device_map=device,
                                       max_inference_batch_size=16, max_new_tokens=256)
 name = {"pl": "Polish", "en": "English"}.get(language)
-texts = [r.text for r in model.transcribe(audio=pieces, context=context, language=name)] if pieces else []
+results = [r.text for r in model.transcribe(audio=pieces, context=context, language=name)] if pieces else []
+texts = [""] * len(segments)
+for n, piece in zip(owner, results):
+    texts[n] = (texts[n] + " " + piece).strip()
 
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump({"device": "cuda" if device != "cpu" else "cpu", "texts": texts}, f, ensure_ascii=False)

@@ -19,6 +19,14 @@ public sealed class ComponentItem(Component component) : ObservableObject
     public bool Indeterminate { get => _indeterminate; set => Set(ref _indeterminate, value); }
     public bool Done { get => _done; set => Set(ref _done, value); }
 
+    public string Link { get; } = Components.ManualLink(component);
+    public bool HasLink => Link.Length > 0;
+    public RelayCommand CopyLinkCommand => new(() =>
+    {
+        try { Clipboard.SetText(Link); Status = "Link copied - download it by hand, then restart the app (Components... checks again)."; }
+        catch (System.Runtime.InteropServices.COMException) { Status = "Clipboard is busy - try again."; }
+    });
+
     public static string Gb(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):F1} GB" : $"{bytes / (double)(1 << 20):F0} MB";
 }
 

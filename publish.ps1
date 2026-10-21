@@ -1,7 +1,7 @@
 ﻿# Wersja portable: mała paczka (exe + ffmpeg + modele sherpa + model pyannote), reszta pobiera się u użytkownika przy pierwszym starcie
 # (okno "Components": Whisper, Java + LanguageTool, Ollama i modele tekstu, Python + PyTorch (pyannote, Qwen3-ASR), Qwen3-ASR - wersje i SHA-256
 # przypięte w Core/Components.cs). Model pyannote jedzie w paczce, bo na Hugging Face wymaga akceptacji warunków (konto + token).
-# -Full: paczka offline ze wszystkim, co jest na tym komputerze (bez pobierania u użytkownika; bez Ollamy).
+# -Full: paczka offline ze wszystkim, co jest na tym komputerze (bez pobierania u użytkownika; z Ollamą i modelem tekstu Qwen).
 # Użycie: powershell -File publish.ps1 [-Out dist] [-NoZip] [-Full]
 param(
     [string]$Out = "$PSScriptRoot\dist\TeamsCatcher",
@@ -13,6 +13,10 @@ param(
     [switch]$NoZip,
     # folder modelu Qwen3-ASR (tylko -Full)
     [string]$QwenAsr = "$PSScriptRoot\TeamsCatcher\bin\x64\Debug\net10.0-windows10.0.19041.0\win-x64\models\Qwen3-ASR-1.7B",
+    # Ollama i modele tekstu na tym komputerze (tylko -Full); nazwy jak w Settings.cs (notatki, korekta, sprawdzający)
+    [string]$OllamaHome = "$env:LOCALAPPDATA\Programs\Ollama",
+    [string]$OllamaModels = "$env:USERPROFILE\.ollama\models",
+    [string[]]$TextModels = @("unsloth/Qwen3.5-4B-GGUF:Q3_K_M"),
     [switch]$Full
 )
 $ErrorActionPreference = "Stop"
@@ -29,7 +33,7 @@ if ($Full) {
         @("$WhisperModels\ggml-large-v3-turbo.bin", "whisper\ggml-large-v3-turbo.bin"),
         @("$WhisperModels\ggml-silero-v5.1.2.bin", "whisper\ggml-silero-v5.1.2.bin")
     )
-    foreach ($f in "$WhisperBin\whisper-cli.exe", "$QwenAsr\config.json", "$Tools\jre\bin\java.exe", "$Tools\languagetool\languagetool-server.jar") { if (-not (Test-Path $f)) { throw "Missing: $f" } }
+    foreach ($f in "$WhisperBin\whisper-cli.exe", "$QwenAsr\config.json", "$Tools\jre\bin\java.exe", "$Tools\languagetool\languagetool-server.jar", "$OllamaHome\ollama.exe", "$OllamaModels\manifests\hf.co\$($TextModels[0] -replace ':', '\')") { if (-not (Test-Path $f)) { throw "Missing: $f" } }
 }
 foreach ($c in $copies) { if (-not (Test-Path $c[0])) { throw "Missing: $($c[0])" } }
 $pyModel = "$Tools\pyannote-models\community-1"
@@ -56,6 +60,16 @@ if ($Full) {
     New-Item -ItemType Directory -Force "$Out\models" | Out-Null
     Copy-Item $QwenAsr "$Out\models\Qwen3-ASR-1.7B" -Recurse -Exclude ".cache"
     # venv uv wskazuje na Pythona w profilu użytkownika, więc do paczki idzie samodzielny Python + pakiety venv
+    # Ollama (exe + lib z instalacji) i modele tekstu (manifesty + blob-y z ~\.ollama\models) w ollama\ - jak portable: OLLAMA_MODELS = ollama\models
+    New-Item -ItemType Directory -Force "$Out\ollama\models\blobs" | Out-Null
+    Copy-Item "$OllamaHome\ollama.exe", "$OllamaHome\lib" "$Out\ollama" -Recurse
+    foreach ($m in $TextModels) {
+        $manifest = "manifests\hf.co\$($m -replace ':', '\')"
+        New-Item -ItemType Directory -Force (Split-Path "$Out\ollama\models\$manifest") | Out-Null
+        Copy-Item "$OllamaModels\$manifest" "$Out\ollama\models\$manifest"
+        $json = Get-Content "$OllamaModels\$manifest" -Raw | ConvertFrom-Json
+        foreach ($d in @($json.config.digest) + @($json.layers.digest)) { Copy-Item "$OllamaModels\blobs\$($d -replace ':', '-')" "$Out\ollama\models\blobs" -Force }
+    }
     $pyEnv = "$Tools\pyannote"
     $pyHome = ((Get-Content "$pyEnv\pyvenv.cfg") -match '^home\s*=' -replace '^home\s*=\s*', '').Trim()
     Copy-Item $pyHome "$Out\pyannote" -Recurse

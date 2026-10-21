@@ -269,11 +269,6 @@
                         </Button>
                         <TextBox Text="{Binding OutputFolder, UpdateSourceTrigger=LostFocus}" ToolTip="Folder for recordings" />
                     </DockPanel>
-                    <DockPanel Margin="0,8,0,0">
-                        <TextBlock DockPanel.Dock="Left" Style="{StaticResource Label}" Text="GLOSSARY" Margin="0,0,8,0" />
-                        <TextBox Text="{Binding TranscriptGlossary, UpdateSourceTrigger=LostFocus}"
-                                 ToolTip="Names, companies and terms used in your meetings, comma-separated (e.g. Tekla, IFC, Kowalski). Helps Whisper spell them correctly." />
-                    </DockPanel>
                     <WrapPanel Margin="0,8,0,0">
                         <CheckBox IsChecked="{Binding AutoRecord}" Content="Record Teams calls automatically" Margin="0,0,20,0" />
                         <CheckBox IsChecked="{Binding RecordMicrophone}" Content="Record my microphone" Margin="0,0,20,0" />
@@ -288,7 +283,7 @@
                         <CheckBox IsChecked="{Binding LiveTranscript}" Content="Live transcript" Margin="0,0,8,0"
                                   ToolTip="During a call: transcript every ~30 s (Whisper large-v3-turbo) in RESULT - Live. After the call the full transcript is made as usual." />
                         <CheckBox IsChecked="{Binding LiveNotes}" Content="Live notes" Margin="0,0,8,0"
-                                  ToolTip="Every 5 minutes of a call: transcript and a partial note (main point, assumptions, conclusions, remarks, agreements) in a tray popup. After the call the result is assembled from the parts - ready sooner." />
+                                  ToolTip="Every 3 minutes of a call: a note from the live transcript so far (after 2 parts - from 2, after 3 - from 3...) in a tray popup and in RESULT - Live notes, plus unknown words in TO CLARIFY at once. Needs Live transcript. After the call the full transcript and notes are made as usual." />
                         <TextBlock Style="{StaticResource Label}" Text="OTHERS" Margin="0,0,6,0" />
                         <ToggleButton AutomationProperties.Name="Speakers on the Teams side" x:Name="SpeakersToggle" Padding="10,3" Margin="0,0,20,0" Foreground="{StaticResource WF.Brush.Blue100}" Background="#332F7BFF"
                                       BorderBrush="{StaticResource WF.Brush.Blue300}" ToolTip="Number of speakers on the Teams side (without you). Set it when you know it - the split is exact; auto guesses from voice similarity.">
@@ -519,7 +514,7 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="{Binding Term.Term}" FontWeight="Bold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                                            ToolTip="{Binding Term.Reason}" />
-                                <TextBlock Grid.Column="1" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="8,0"
+                                <TextBlock Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap" Margin="8,0"
                                            Foreground="{StaticResource WF.Brush.Slate}" ToolTip="{Binding Term.Sentence}">
                                     <Run Text="{Binding Term.Time, Mode=OneWay}" /> <Run Text="{Binding Term.Sentence, Mode=OneWay}" />
                                 </TextBlock>

@@ -18,6 +18,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
     nint _lastCallWindow;
     CaptureTarget? _pendingTarget;
     bool _loggedMuted;
+    string _lastAudible = "";
     int _ticks;
 
     public RecordingSession? Session { get; private set; }
@@ -94,8 +95,13 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         }
         if (Session != null && ++_ticks % 5 == 0) Session.AddTeamsAudio(TeamsProcesses.AudioPids(settings.TeamsProcess));
         if (Session != null && _ticks % 10 == 0) Session.SaveInfo();
-        if (Session != null) ScheduleLiveChunk(Session);
+        // co 10 s, tylko gdy lista grających sesji się zmieniła (bez powtarzania tej samej linii)
+        if (Session != null && _ticks % 10 == 0 && TeamsProcesses.AudibleSessions(settings.TeamsProcess, Session.Info.TeamsAudio.Select(a => a.Pid).ToList()) is { Length: > 0 } audible
+            && audible != _lastAudible)
+            log($"Audible sessions: {_lastAudible = audible}");
+        if (Session != null && _ticks % 30 == 0) log($"Levels (30 s): {Session.TakeLevels()}; Teams mic {(_watcher.Muted ? "MUTED" : "on")}.");
         if (Session != null && settings.LiveTranscript) _liveText?.Schedule(Session, _stopping);
+        if (Session != null && settings.LiveTranscript && settings.AutoTranscribe) _liveNotes?.Schedule(Session, _stopping);
         if (Session != null && _ticks % 60 == 0 && !RecordingSession.HasFreeSpace(settings.OutputFolder, settings.MinFreeBytes))
         {
             log("Low disk space, recording stopped.");
@@ -120,8 +126,9 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         // ręczny start bez rozmowy -> główne (największe) okno Teams
         var window = windows.FirstOrDefault(w => w.Handle == _watcher.CallWindow) ?? TeamsWindowFinder.PickLargest(windows);
         _loggedMuted = false;
-        (_liveIndex, _liveFrom, _liveCut) = (0, 0, null);
         _liveText = new LiveTranscript(settings, ffmpeg, log);
+        _liveNotes = new LiveNotesService(settings, _liveText, log);
+        _liveNotes.Ready += (title, notes, file) => PartialNotesReady?.Invoke(title, notes, file);
         Session = RecordingSession.Start(settings, ffmpeg, TeamsProcesses.AudioPids(settings.TeamsProcess), window, () => _watcher.Muted, log);
     }
 
@@ -131,8 +138,12 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         Session = null;
         Finalizing = true;
         // trwający zrzut kawałka korzysta z plików sesji - najpierw on
-        if (_liveCut != null) await _liveCut;
         if (_liveText != null) await _liveText.Completion;
+        if (_liveNotes != null)
+        {
+            await _liveNotes.Completion;
+            await _liveNotes.DisposeAsync();
+        }
         try { await s.StopAsync(); }
         finally { Finalizing = false; }
         if (!settings.AutoTranscribe || !File.Exists(Path.Combine(s.Folder, RecordingSession.TranscriptWav))) return;
@@ -238,45 +249,9 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
             ? $"Notatka {TimeSpan.FromSeconds(info.From):h\\:mm\\:ss}-{TimeSpan.FromSeconds(info.To):h\\:mm\\:ss}"
             : "Notatka częściowa";
 
-    // Kawałek co LiveChunkMinutes: zrzut dźwięku do tej chwili, cięcie w ciszy, przetwarzanie w kolejce (tryb Chunk).
-    int _liveIndex;
-    double _liveFrom;
-    Task? _liveCut;
+    // Podgląd w trakcie rozmowy: transkrypcja na żywo (Whisper turbo) i z niej notatka narastająca + pytania "do wyjaśnienia".
     LiveTranscript? _liveText;
-
-    double ChunkSeconds => settings.LiveChunkMinutes * 60.0;
-
-    void ScheduleLiveChunk(RecordingSession s)
-    {
-        if (!settings.AutoTranscribe || settings.LiveChunkMinutes <= 0 || _liveCut is { IsCompleted: false }) return;
-        // zapas na okno ciszy za planowanym końcem kawałka
-        if (s.Elapsed.TotalSeconds < _liveFrom + ChunkSeconds + LiveChunks.QuietWindowSeconds + 5) return;
-        _liveCut = CutLiveChunkAsync(s);
-    }
-
-    async Task CutLiveChunkAsync(RecordingSession s)
-    {
-        var snapshot = Path.Combine(s.Folder, LiveChunks.Dir, LiveChunks.SnapshotWav);
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(snapshot)!);
-            if (await s.SnapshotTranscriptAsync(snapshot) is not { } zero) return;
-            var index = _liveIndex + 1;
-            var folder = LiveChunks.ChunkFolder(s.Folder, index);
-            if (await LiveChunks.CutAsync(snapshot, zero, index, _liveFrom, _liveFrom + ChunkSeconds, false, folder, ffmpeg, _stopping) is not { } chunk) return;
-            (_liveIndex, _liveFrom) = (index, chunk.To);
-            log($"Live chunk {index}: {TimeSpan.FromSeconds(chunk.From):h\\:mm\\:ss}-{TimeSpan.FromSeconds(chunk.To):h\\:mm\\:ss}, processing in the background.");
-            QueueTranscription(folder, mode: Transcriber.Mode.Chunk);
-        }
-        catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException or InvalidDataException)
-        {
-            log($"Live chunk failed: {e.Message}");
-        }
-        finally
-        {
-            File.Delete(snapshot);
-        }
-    }
+    LiveNotesService? _liveNotes;
 
     // Po rozmowie z kawałkami: ostatni kawałek (do końca nagrania) i złożenie całości; bez kompletu kawałków - całość jak zwykle.
     void QueueFinish(string folder) => QueueJob(folder, Transcriber.Mode.Assemble.ToString(), async () =>

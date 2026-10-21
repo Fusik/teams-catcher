@@ -48,3 +48,13 @@ Każda klatka ma znacznik czasu uniksowego (`setpts=RTCTIME`), a audio zapisuje 
 - WAV max 4 GB (ok. 6 h audio Teams), dłuższe nagrania wymagają RF64.
 - Minimalne wolne miejsce: `MinFreeBytes` (2 GB).
 - Spotkanie z ochroną treści (Teams Premium) może dać czarny obraz. Dźwięk dalej się nagrywa.
+
+## Dźwięk rozmówców: z urządzenia, nie z procesów (zmiana 2026-10-22)
+
+Process loopback na procesach Teams (`ms-teams.exe` i potomkowie) nie słyszy głosu rozmówców nowego Teams: Windows pokazuje dźwięk na sesji `ms-teams`,
+a przechwytywanie procesu (include i exclude) daje ciszę (-90 dB), niezależnie od wyciszenia mikrofonu; słychać tylko krótkie sygnały (rozłączenie).
+Test z drugim urządzeniem (telefon): loopback całego urządzenia ma ten głos. Dlatego `RecordingSession.StartDeviceAudio` nagrywa loopback domyślnego urządzenia
+odtwarzania do rozmów jako ścieżkę Teams (`teams_device.wav`), a `ForeignAudioGate` zeruje ją, gdy miernik sesji Windows pokazuje dźwięk procesu spoza rodziny Teams
+(YouTube, muzyka, dźwięki systemu). Skutek uboczny: obcy dźwięk grający równocześnie z rozmową ucina też głos rozmówców. Błąd urządzenia = ścieżki po procesach jak dawniej.
+Log: `Levels (30 s)` (poziomy ścieżek, wyciszenie), `Audible sessions` (kto gra), `Other audio (...) is playing - not recorded` (blokada).
+Wyciszony mikrofon w Teams = zero w kanale "Ja", dźwięk rozmówców nagrywa się dalej.

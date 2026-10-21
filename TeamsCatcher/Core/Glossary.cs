@@ -1,70 +1,9 @@
-﻿using System.Text.RegularExpressions;
-
 namespace TeamsCatcher.Core;
 
-// Pisownia nazw ze słowniczka użytkownika (zaufane źródło). Whisper bywa pewny źle zapisanego nazwiska
-// (wywiad TVN: "Doroczyński", "Sztur", "Kawalski" zamiast Dorociński, Stuhr, Kawulski) - ani prompt, ani korekta niepewnych słów tego nie łapią.
+// Podobieństwo słów (odmiana, odległość edycyjna) dla notatek i filtra nazw własnych. Dawny słowniczek użytkownika (pole GLOSSARY) usunięty:
+// pisownię objaśnia użytkownik tylko tam, gdzie coś jest niejasne (TO CLARIFY -> baza wiedzy).
 public static class Glossary
 {
-    // Pojedyncze słowo: najwyżej 1/4 liter inaczej. Nazwisko po zgodnym imieniu: do 0,45 ("Sztur" -> "Stuhr" brzmi po polsku tak samo).
-    const double SingleWordMaxDistance = 0.25, AfterExactWordMaxDistance = 0.45;
-    const int MinWordLength = 4;
-
-    public static List<TranscriptSegment> Apply(IReadOnlyList<TranscriptSegment> segments, string glossary, out int replaced)
-    {
-        var terms = glossary.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(t => t.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Where(t => t.Length > 0).ToList();
-        var count = 0;
-        var result = segments.Select(s =>
-        {
-            var text = s.Text;
-            foreach (var term in terms) text = ApplyTerm(text, term, ref count);
-            return text == s.Text ? s : s with { Text = text };
-        }).ToList();
-        replaced = count;
-        return result;
-    }
-
-    public static string Fix(string text, string glossary) => Apply([new TranscriptSegment(0, 0, "", text)], glossary, out _)[0].Text;
-
-    static string ApplyTerm(string text, string[] term, ref int count)
-    {
-        // słowo = litery/cyfry; reszta (interpunkcja, spacje) zostaje bez zmian
-        var words = Regex.Matches(text, @"[\p{L}\p{N}]+").ToList();
-        for (var i = 0; i + term.Length <= words.Count; i++)
-        {
-            var window = words.Skip(i).Take(term.Length).ToList();
-            // wyrazy muszą stać obok siebie (tylko spacja między nimi)
-            if (window.Zip(window.Skip(1)).Any(p => text[(p.First.Index + p.First.Length)..p.Second.Index].Trim().Length > 0)) continue;
-            if (!Matches(window.Select(w => w.Value).ToArray(), term)) continue;
-            var start = window[0].Index;
-            var end = window[^1].Index + window[^1].Length;
-            var replacement = string.Join(" ", term);
-            if (text[start..end] == replacement) continue;
-            count++;
-            return ApplyTerm(text[..start] + replacement + text[end..], term, ref count);
-        }
-        return text;
-    }
-
-    static bool Matches(string[] words, string[] term)
-    {
-        var previousExact = false;
-        for (var i = 0; i < term.Length; i++)
-        {
-            var (w, t) = (words[i].ToLowerInvariant(), term[i].ToLowerInvariant());
-            var exact = w == t;
-            if (!exact)
-            {
-                if (t.Length < MinWordLength || w[0] != t[0] || IsInflection(w, t)) return false;
-                var limit = previousExact ? AfterExactWordMaxDistance : SingleWordMaxDistance;
-                if (Distance(w, t) / (double)Math.Max(w.Length, t.Length) > limit) return false;
-            }
-            previousExact = exact;
-        }
-        return true;
-    }
-
     // Różnica tylko w końcówce (ostatnie <= 3 litery) = polska odmiana ("Tekli" od "Tekla"), nie literówka - nie zmieniamy.
     public static bool IsInflection(string word, string term)
     {

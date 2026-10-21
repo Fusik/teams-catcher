@@ -11,10 +11,10 @@ public static class TranscriptLlm
     // Whisper bierze z promptu najwyżej 224 tokeny; słowniczek musi się zmieścić.
     const int MaxGlossaryChars = 600;
 
-    // Nazwy własne i terminy z pierwszego przebiegu (+ słowniczek użytkownika) -> prompt drugiego przebiegu Whispera.
-    public static async Task<string> BuildGlossaryAsync(string userGlossary, IReadOnlyList<TranscriptSegment> firstPass, Settings s, CancellationToken ct)
+    // Nazwy własne i terminy z pierwszego przebiegu -> zaufane słowa w dyskusji modeli.
+    public static async Task<string> BuildGlossaryAsync(IReadOnlyList<TranscriptSegment> firstPass, Settings s, CancellationToken ct)
     {
-        var terms = SplitTerms(userGlossary);
+        var terms = new List<string>();
         if (firstPass.Count > 0)
         {
             var text = string.Join("\n", firstPass.Select(x => x.Text));

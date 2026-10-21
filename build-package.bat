@@ -1,7 +1,7 @@
 @echo off
 rem Tworzenie paczki Teams Catcher (dwuklik albo: build-package.bat small / full).
 rem small = mala paczka (~0,2 GB zip), modele pobieraja sie u uzytkownika przy pierwszym starcie (okno Components).
-rem full  = paczka offline ze wszystkim z tego komputera (~4,5 GB, bez Ollamy).
+rem full  = paczka offline ze wszystkim z tego komputera (~14 GB, z Ollama i modelami tekstu).
 rem Wynik: dist\TeamsCatcher\ i dist\TeamsCatcher.zip (albo dist\TeamsCatcher-full\ i .zip).
 setlocal
 cd /d "%~dp0"

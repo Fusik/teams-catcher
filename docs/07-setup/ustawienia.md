@@ -21,7 +21,7 @@ Plik jest edytowalny ręcznie, więc wartości są sprawdzane przy wczytaniu: za
 | Klucz | Domyślnie | Opis |
 |---|---|---|
 | `AutoTranscribe` | true | transkrypcja po rozmowie |
-| `LiveChunkMinutes` | 5 | kawałki w trakcie (0-60; 0 = wyłączone) |
+| `LiveNotesMinutes` | 3 | notatka narastająca i pytania w trakcie rozmowy, z transkrypcji na żywo (0-30; 0 = wyłączone; potrzebuje `LiveTranscript`) |
 | `TranscriptLanguage` | `auto` | `auto` albo kod języka (`pl`, `en`) |
 | `TranscriptGlossary` | "" | nazwy i terminy po przecinku |
 | `CorrectTranscript` | true | dyskusja modeli (korekta) |

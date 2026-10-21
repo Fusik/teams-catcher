@@ -19,8 +19,6 @@ public static class Debate
     const long SentenceGapMs = 1500;
     // słowo hipotezy B/C należy do zdania, gdy jego środek leży w czasie zdania (+ margines na różnice w czasach modeli)
     const long WordMarginMs = 300;
-    // więcej pytań na jedno nagranie to już nie pomoc, tylko praca dla użytkownika
-    const int MaxQuestions = 30;
     // baza wiedzy bieżącej transkrypcji (jedna transkrypcja naraz - kolejka w CatcherService)
     static KnowledgeBase _kb = new();
 
@@ -149,7 +147,7 @@ public static class Debate
         var distinct = new List<UnclearTerm>();
         foreach (var x in unclear)
             if (!distinct.Any(d => KnowledgeBase.SameWord(TranscriptLlm.Bare(d.Term), TranscriptLlm.Bare(x.Term)))) distinct.Add(x);
-        unclear = distinct.Take(MaxQuestions).ToList();
+        unclear = distinct;
         log("  step: final spelling check (LanguageTool)");
         var marked = result.Sum(x => Regex.Matches(x.Text, @"\?\?[^?\s]+\?\?").Count);
         WriteModelNotes(notes, s, disputed, $"gotowe: zgoda w {disputed.Count - unresolved.Count} z {disputed.Count} spornych zdań, bez zgody {unresolved.Count}, oznaczonych słów {marked}");

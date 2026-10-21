@@ -630,11 +630,6 @@ public class QualityTests
     }
 
     [Fact]
-    public void Second_pass_needs_terms_missing_from_first_pass() =>
-        Assert.Equal(["Dorociński", "scenarzysta"], Transcriber.NewTerms("Maciej Sztur, Dorociński, scenarzysta, dorota",
-            [S(0, 1, "Rozmówca 1", "Goście: Maciej Sztur i Marcin Doroczyński."), S(1, 2, "Rozmówca 4", "Cześć, tu Dorota.")]));
-
-    [Fact]
     public void Whisper_args_carry_glossary_prompt() =>
         Assert.EndsWith("--prompt \"Tekla, IFC\" --carry-initial-prompt",
             Transcriber.BuildWhisperArgs(new Settings(), "a.wav", "a", vad: false, "pl", "Tekla, IFC"));
@@ -708,34 +703,6 @@ public class QualityTests
         Assert.True(chunks.Count > 1);
         Assert.All(chunks, c => Assert.True(c.Length <= 530));
         Assert.Equal(text + "\n", string.Concat(chunks));
-    }
-}
-
-public class GlossaryTests
-{
-    const string Names = "Marcin Dorociński, Maciej Stuhr, Maciej Kawulski, Tekla";
-
-    [Theory]
-    // z wywiadu TVN
-    [InlineData("Razem z nami wyjątkowi goście, Marcin Doroczyński, Maciej Sztur i Maciej Kawalski. Dzień dobry.",
-                "Razem z nami wyjątkowi goście, Marcin Dorociński, Maciej Stuhr i Maciej Kawulski. Dzień dobry.")]
-    [InlineData("Model w Tekli i tekla structures.", "Model w Tekli i Tekla structures.")] // odmiana zostaje
-    [InlineData("Rozmawiałem z Maciejem Kawulskim.", "Rozmawiałem z Maciejem Kawulskim.")]
-    // bez zmian: inne imię, inne nazwisko, zbyt odległe słowo, nazwiska rozdzielone przecinkiem
-    [InlineData("Był też Marcin Kowalski.", "Był też Marcin Kowalski.")]
-    [InlineData("Maciej Kowalczyk dzwonił.", "Maciej Kowalczyk dzwonił.")]
-    [InlineData("Teksty i tabela.", "Teksty i tabela.")]
-    [InlineData("Maciej, Sztur", "Maciej, Sztur")]
-    public void Fixes_close_spellings_of_glossary_names(string text, string expected) =>
-        Assert.Equal(expected, Glossary.Fix(text, Names));
-
-    [Fact]
-    public void Counts_replacements_and_keeps_untouched_segments()
-    {
-        TranscriptSegment[] segments = [new(0, 1, "Ja", "Marcin Doroczyński i Maciej Sztur."), new(1, 2, "Ja", "Dzień dobry.")];
-        var result = Glossary.Apply(segments, Names, out var replaced);
-        Assert.Equal(2, replaced);
-        Assert.Same(segments[1], result[1]);
     }
 }
 
@@ -1255,8 +1222,8 @@ public class ContextFitTests
     }
 
     [Theory]
-    [InlineData(8188 - 400, 12288, 16384)] // RTX 4060 8 GB: Llama 12288 (16384 = 13% na CPU), Qwen do limitu 16k
-    [InlineData(6144 - 400, 4096, 16384)] // docelowa karta 6 GB: Llama tylko minimum
+    [InlineData(8188 - 400, 12288, 98304)] // RTX 4060 8 GB: Llama 12288 (16384 = 13% na CPU), Qwen ~98k (limit = VRAM)
+    [InlineData(6144 - 400, 4096, 32768)] // docelowa karta 6 GB: Llama tylko minimum
     public void Context_is_the_largest_that_fits_the_vram_budget(long budgetMb, int llama, int qwen)
     {
         Assert.Equal(llama, Ollama.FitContext(budgetMb * Mb, 4_920_753_328, Kv(Llama).Item1, Kv(Llama).Item2));
@@ -1279,5 +1246,68 @@ public class ContextFitTests
         Assert.Equal(["0:15:00", "0:20:00", "0:25:00"], parts.Select(p => p.Time));
         Assert.Equal(2, MeetingNotes.Parts(string.Join("\n", lines.Take(21))).Count); // 25:00 samo = dołączone do poprzedniej
         Assert.Single(MeetingNotes.Parts("bez czasów"));
+    }
+}
+public class LiveNotesTests
+{
+    [Fact]
+    public void Notes_of_all_parts_so_far_are_merged_in_order()
+    {
+        MeetingNotes.Notes Piece(string time, string point) => new(
+            new() { [MeetingNotes.Section.Conclusions] = [new MeetingNotes.Item(time, point)] }, [new MeetingNotes.Part(time, "temat", [new MeetingNotes.Item(time, point)])]);
+        var merged = LiveNotesService.Merge([Piece("0:01:00", "a"), new MeetingNotes.Notes([], []), Piece("0:07:00", "b")]);
+        Assert.Equal(["a", "b"], merged.Sections[MeetingNotes.Section.Conclusions].Select(x => x.Text));
+        Assert.Equal(["0:01:00", "0:07:00"], merged.Parts.Select(p => p.Time));
+    }
+}
+
+public class LanguageSampleTests
+{
+    [Fact]
+    public void Language_sample_takes_four_one_minute_windows_where_the_speech_is()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"speech-{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(file, new WaveFormat(16000, 16, 1)))
+            {
+                var rnd = new Random(1);
+                // 15 min ciszy z trzema 30-sekundowymi fragmentami mowy (szum) w 100., 400. i 700. sekundzie
+                for (var second = 0; second < 900; second++)
+                    for (var i = 0; i < 16000; i++)
+                        writer.WriteSample(second is >= 100 and < 130 or >= 400 and < 430 or >= 700 and < 730 ? (float)(rnd.NextDouble() - 0.5) * 0.4f : 0f);
+            }
+            var starts = Transcriber.SpeechWindows(file);
+            Assert.Equal(4, starts.Count);
+            Assert.All(starts.Zip(starts.Skip(1)), p => Assert.True(p.Second - p.First >= 60));
+            foreach (var speech in new[] { 100, 400, 700 })
+                Assert.Contains(starts, s => s <= speech && s + 60 >= speech + 30);
+        }
+        finally { File.Delete(file); }
+    }
+}
+
+public class VoiceProfileTests
+{
+    static readonly float[] Me = [1, 0, 0];
+
+    [Fact]
+    public void Single_speaker_with_my_voice_is_me()
+    {
+        Assert.Equal("Rozmówcy", VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówcy"] = [0.9f, 0.1f, 0] }, Me));
+    }
+
+    [Fact]
+    public void Speaker_that_is_clearly_closer_than_the_others_is_me()
+    {
+        var speakers = new Dictionary<string, float[]> { ["Rozmówca 1"] = [0.3f, 1, 0], ["Rozmówca 2"] = [1, 0.2f, 0] };
+        Assert.Equal("Rozmówca 2", VoiceProfile.ChooseMe(speakers, Me));
+    }
+
+    [Fact]
+    public void Nobody_is_me_when_similarity_is_low_or_ambiguous()
+    {
+        Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówcy"] = [0.3f, 1, 0] }, Me));
+        Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówca 1"] = [1, 0.1f, 0], ["Rozmówca 2"] = [1, 0.15f, 0] }, Me));
     }
 }

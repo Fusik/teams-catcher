@@ -19,7 +19,7 @@ public static class Ollama
     // między 4096 a 16k: notatki idą 5-minutowymi częściami (~2-3 tys. tokenów), większy kontekst tylko zajmuje VRAM,
     // a kontekst wypchnięty do RAM liczy się wielokrotnie wolniej. Ten sam dla wszystkich zapytań do modelu: Ollama 0.40 nie przeładowuje modelu, gdy kolejne zapytanie
     // chce większego num_ctx - dyskusja (4096) ładowała model pierwsza, a notatki (8192) dostawały ucięty początek promptu.
-    public const int MinContext = 4096, MaxContext = 16384;
+    public const int MinContext = 4096, MaxContext = 262144; // praktycznie limit modelu (Qwen 3.5: 256k), reszta = ile mieści VRAM
     // bufory obliczeń i reszta poza wagami i kontekstem: RTX 4060 8 GB - Llama 8B z 16384 weszła w 13% na CPU, z 12288 w 100% na GPU
     // (zapas 500 MB dawał 16384 i przeładowanie przy każdym starcie)
     const long Overhead = 1536L * 1024 * 1024;
@@ -28,7 +28,16 @@ public static class Ollama
     // nowy budżet VRAM (zakładka MODELS) = konteksty liczone od nowa
     public static void ResetContexts() => Contexts.Clear();
 
+    // Górny limit kontekstu dla zapytań z tego przepływu zadań (notatki w trakcie rozmowy, obok Whispera: mały kontekst = mało VRAM); 0 = bez limitu.
+    public static readonly AsyncLocal<int> ContextLimit = new();
+
     public static async Task<int> ContextAsync(string model, Settings s, CancellationToken ct)
+    {
+        var context = await FittingContextAsync(model, s, ct);
+        return ContextLimit.Value is > 0 and var limit ? Math.Min(context, limit) : context;
+    }
+
+    static async Task<int> FittingContextAsync(string model, Settings s, CancellationToken ct)
     {
         if (Contexts.TryGetValue(model, out var known)) return known;
         int context;
@@ -125,7 +134,7 @@ public static class Ollama
             {
                 Log?.Invoke($"  model {model} loaded: {Placement(info.Size, info.Vram)}, context {info.Context}");
                 // Ollama liczy własne bufory - część na CPU = mniejszy kontekst i przeładowanie przy następnym zapytaniu
-                if (info.Vram < info.Size && contextTokens > MinContext)
+                if (info.Vram < info.Size && contextTokens > MinContext && ContextLimit.Value == 0)
                 {
                     Contexts[model] = Math.Max(MinContext, contextTokens * 3 / 4 / 2048 * 2048);
                     Log?.Invoke($"  model {model} did not fit on the GPU - context reduced to {Contexts[model]}");

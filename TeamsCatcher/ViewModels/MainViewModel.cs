@@ -158,7 +158,7 @@ public sealed class MainViewModel : ObservableObject
     // Prawy panel: notatka PL / EN, transkrypcja i 3 rozpoznania mowy, z których powstała notatka (tylko istniejące pliki).
     static readonly (string Label, string File)[] AllViews =
     [
-        ("Live", Path.Combine(LiveChunks.Dir, TeamsCatcher.Core.LiveTranscript.FileName)), ("Notes PL", MeetingNotes.FileName("pl")), ("Notes EN", MeetingNotes.FileName("en")), ("Copilot", CopilotNotes.FileName),
+        ("Live", Path.Combine(LiveChunks.Dir, TeamsCatcher.Core.LiveTranscript.FileName)), ("Live notes", Path.Combine(LiveChunks.Dir, LiveNotesService.FileName)), ("Notes PL", MeetingNotes.FileName("pl")), ("Notes EN", MeetingNotes.FileName("en")), ("Copilot", CopilotNotes.FileName),
         ("Transcript PL", "transcript.pl.md"), ("Transcript EN", "transcript.en.md"),
         ("A large-v3", Path.Combine(WorkNotes.Dir, "01-whisper-large-v3.md")), ("B turbo", Path.Combine(WorkNotes.Dir, "02-whisper-turbo.md")),
         ("C Qwen3-ASR", Path.Combine(WorkNotes.Dir, "03-qwen3-asr.md")),
@@ -200,7 +200,8 @@ public sealed class MainViewModel : ObservableObject
         if (SelectedRecording is not { } r || !Directory.Exists(r.Folder)) return "";
         var analysis = Path.Combine(r.Folder, WorkNotes.Dir);
         return string.Join("|", Directory.EnumerateFiles(r.Folder).Concat(Directory.Exists(analysis) ? Directory.EnumerateFiles(analysis) : [])
-            .Append(TeamsCatcher.Core.LiveTranscript.PathIn(r.Folder)).Select(f => File.GetLastWriteTimeUtc(f).Ticks));
+            .Concat(LiveChunks.List(r.Folder).Select(c => Path.Combine(c.Folder, KnowledgeBase.QuestionsFile)))
+            .Append(TeamsCatcher.Core.LiveTranscript.PathIn(r.Folder)).Append(Path.Combine(r.Folder, LiveChunks.Dir, LiveNotesService.FileName)).Select(f => File.GetLastWriteTimeUtc(f).Ticks));
     }
 
     // Po objaśnieniu niejasnych słów: zapis do bazy wiedzy i analiza od nowa (dyskusja, tłumaczenie, notatki) z tym kontekstem, bez Whispera.
@@ -417,11 +418,11 @@ public sealed class MainViewModel : ObservableObject
         set { _settings.RecordMicrophone = value; SaveSettings(); }
     }
 
-    // Notatki częściowe co LiveChunkMinutes w trakcie rozmowy (dymek w trayu); wyłączone = wszystko po rozmowie.
+    // Notatki narastające co LiveNotesMinutes w trakcie rozmowy (dymek w trayu, widok "Live notes"); wyłączone = wszystko po rozmowie.
     public bool LiveNotes
     {
-        get => _settings.LiveChunkMinutes > 0;
-        set { _settings.LiveChunkMinutes = value ? 5 : 0; SaveSettings(); }
+        get => _settings.LiveNotesMinutes > 0;
+        set { _settings.LiveNotesMinutes = value ? 3 : 0; SaveSettings(); }
     }
 
     public bool RecordVideo
@@ -449,11 +450,6 @@ public sealed class MainViewModel : ObservableObject
         set { _settings.DiarizationSpeakers = value.Count; SaveSettings(); OnPropertyChanged(); }
     }
 
-    public string TranscriptGlossary
-    {
-        get => _settings.TranscriptGlossary;
-        set { _settings.TranscriptGlossary = value; SaveSettings(); }
-    }
 
     public bool LiveTranscript
     {
@@ -598,8 +594,14 @@ public sealed class MainViewModel : ObservableObject
         var typed = Questions.Where(q => q.Meaning.Length > 0).ToDictionary(q => (q.Folder, q.Term.Term), q => q.Meaning);
         Questions.Clear();
         if (SelectedRecording is { } recording)
-            foreach (var term in KnowledgeBase.LoadQuestions(recording.Folder).Where(q => !kb.Knows(q.Term)))
+        {
+            // w trakcie rozmowy pytania są jeszcze w kawałkach na żywo (łączone po rozmowie) - pokazujemy je od razu
+            var all = new List<UnclearTerm>();
+            foreach (var q in KnowledgeBase.LoadQuestions(recording.Folder).Concat(LiveChunks.List(recording.Folder).SelectMany(c => KnowledgeBase.LoadQuestions(c.Folder))))
+                if (!kb.Knows(q.Term) && !all.Any(x => KnowledgeBase.SameWord(TranscriptLlm.Bare(x.Term), TranscriptLlm.Bare(q.Term)))) all.Add(q);
+            foreach (var term in all)
                 Questions.Add(new QuestionItem(term, recording.Folder) { Meaning = typed.GetValueOrDefault((recording.Folder, term.Term), "") });
+        }
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
     }

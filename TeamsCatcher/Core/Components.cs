@@ -55,17 +55,17 @@ public static class Components
                 "d35f31e712f0fcf6ac5a093edc90204fbff22f720ba3950bd09d331d5e621636", Path.GetDirectoryName(Path.GetDirectoryName(s.JavaExe)!)!, "jdk-21.0.12.1+1-jre/"),
             new("languagetool", "LanguageTool 6.6", "spelling and grammar check (only for the Correct option)", ComponentKind.Zip, 251_998_221, Path.Combine(s.LanguageToolDir, "languagetool-server.jar"),
                 "https://languagetool.org/download/LanguageTool-6.6.zip", "53600506b399bb5ffe1e4c8dec794fd378212f14aaf38ccef9b6f89314d11631", s.LanguageToolDir, "LanguageTool-6.6/"),
-            new("ollama", "Ollama 0.40.6 (portable)", "runs the text models locally; skipped when Ollama is already installed", ComponentKind.Zip, 1_471_164_488, OllamaExe,
-                "https://github.com/ollama/ollama/releases/download/v0.40.6/ollama-windows-amd64.zip",
-                "e359637575302f288d76c0007c408a4be9c7376d59c4f28684d63b232a44b427", Path.Combine(Base, OllamaDir)),
-            new("notes", $"Text model {s.NotesModel}", "writes the meeting notes in Polish and English from 3 speech versions", ComponentKind.OllamaModel,
+            new("ollama", "Ollama 0.40.7 (portable)", "runs the text models locally; skipped when Ollama is already installed", ComponentKind.Zip, 1_582_514_985, OllamaExe,
+                "https://github.com/ollama/ollama/releases/download/v0.40.7/ollama-windows-amd64.zip",
+                "e6527768c53e85ec4596495fb0f035ef07f437b4b591ebc3581684699a4668f4", Path.Combine(Base, OllamaDir)),
+            new("notes", $"Text model {s.NotesModel}", "corrects the transcript, translates and writes the meeting notes in Polish and English", ComponentKind.OllamaModel,
                 s.NotesModel == "hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M" ? 3_000_000_000 : 0, "", s.NotesModel),
         ];
         // korekta (opcja Correct): piszący i sprawdzający, jeśli to inne modele niż model notatki
         foreach (var (id, model, purpose, size) in new[]
         {
-            ("writer", s.CorrectionModel, "Correct option: proposes fixes of unsure sentences", s.CorrectionModel == "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0" ? 2_700_000_000L : 0),
-            ("checker", s.CheckModel, "Correct option: checks the writer", s.CheckModel == "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0" ? 1_600_000_000L : 0),
+            ("writer", s.CorrectionModel, "Correct option: proposes fixes of unsure sentences", 0L),
+            ("checker", s.CheckModel, "Correct option: checks the writer", 0L),
         })
             if (list.All(c => c.Url != model)) list.Add(new(id, $"Text model {model}", purpose, ComponentKind.OllamaModel, size, "", model));
         list.AddRange([
@@ -77,6 +77,15 @@ public static class Components
         ]);
         return list;
     }
+
+    // Link do ręcznego pobrania (gdy automat zawodzi): plik/zip = adres pobierania, model Ollamy = komenda pull + strona modelu, Python = brak pliku.
+    public static string ManualLink(Component c) => c.Kind switch
+    {
+        ComponentKind.OllamaModel => $"ollama pull {c.Url}" + (c.Url.StartsWith("hf.co/") ? $"\r\n{Hf}/{string.Join('/', c.Url[6..].Split(':')[0].Split('/').Take(2))}" : ""),
+        ComponentKind.HfModel => $"{Hf}/{c.Url}",
+        ComponentKind.PythonEnv => "",
+        _ => c.Url,
+    };
 
     // Brakujące składniki. Ollama: działający serwer (zainstalowana przez użytkownika) = portable niepotrzebna.
     public static async Task<List<Component>> MissingAsync(Settings s, CancellationToken ct)
