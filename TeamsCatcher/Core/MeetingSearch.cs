@@ -12,12 +12,14 @@ public sealed record SearchHit(string Folder, string Kind, string View, string T
     public string Recording => Path.GetFileName(Folder);
 }
 
-// Wyszukiwanie w transkrypcjach i notatkach wszystkich nagrań:
+// Wyszukiwanie w transkrypcjach i notatkach wszystkich nagrań oraz w notatkach .md ze wskazanego folderu (np. vault Obsidiana):
 // - po słowach: bez ogonków i wielkości liter, odmiana przez wspólny początek słowa ("projekt" -> "projektu", "projekcie"), "fraza w cudzysłowie" dosłownie;
 // - po znaczeniu: wektory z lokalnego modelu w Ollamie ("termin oddania" -> "deadline na piątek"), liczone raz na nagranie (analysis\search-index.json).
 public static class MeetingSearch
 {
-    public const string Teams = "Teams calls", Video = "Video files";
+    public const string Teams = "Teams calls", Video = "Video files", Notes = "Notes folder";
+    // Indeksy notatek z folderu użytkownika - obok exe, nie w jego folderze (vault Obsidiana zostaje nietknięty).
+    public static string NotesIndexDir { get; set; } = Path.Combine(AppContext.BaseDirectory, "search-index");
     public const string IndexFile = "search-index.json";
     // shortcut: stały próg dobrany dla qwen3-embedding (pełne 1024 wymiary, zapytanie z instrukcją: trafne 0,54-0,60, obce <= 0,38);
     // inny model może wymagać innego progu. Przycięcie do 256 wymiarów podnosiło obce do 0,45 - dlatego pełne wektory, zapisane jako float16.
@@ -45,8 +47,12 @@ public static class MeetingSearch
 
     static readonly Dictionary<string, Index> Cache = [];
 
+    // Źródło wyszukiwania: folder nagrania albo plik .md z folderu notatek.
+    static bool IsNote(string source) => source.EndsWith(".md", StringComparison.OrdinalIgnoreCase) && File.Exists(source);
+
     public static string KindOf(string folder)
     {
+        if (IsNote(folder)) return Notes;
         try { return JsonSerializer.Deserialize<SessionInfo>(File.ReadAllText(Path.Combine(folder, RecordingSession.InfoJson)))?.Imported == true ? Video : Teams; }
         catch (Exception e) when (e is IOException or JsonException) { return Teams; }
     }
@@ -54,6 +60,12 @@ public static class MeetingSearch
     // Foldery nagrań (z session.json), od najnowszego.
     public static List<string> Recordings(string outputFolder) => !Directory.Exists(outputFolder) ? [] :
         Directory.GetDirectories(outputFolder).Where(d => File.Exists(Path.Combine(d, RecordingSession.InfoJson))).OrderByDescending(Path.GetFileName).ToList();
+
+    // Notatki .md z folderu i podfolderów (bez ustawień i kosza Obsidiana), od ostatnio zmienionej.
+    public static List<string> NoteFiles(string folder) => !Directory.Exists(folder) ? [] :
+        Directory.EnumerateFiles(folder, "*.md", SearchOption.AllDirectories)
+            .Where(f => !f.Split(Path.DirectorySeparatorChar).Any(d => d is ".obsidian" or ".trash"))
+            .OrderByDescending(File.GetLastWriteTimeUtc).ToList();
 
     // --- po słowach ---
 
@@ -93,6 +105,7 @@ public static class MeetingSearch
     // "[0:01:05] Speaker 1: tekst" -> czas + "Speaker 1: tekst"; notatki: linie z treścią bez znaczników Markdown.
     public static List<Passage> Passages(string folder)
     {
+        if (IsNote(folder)) return NotePassages(folder);
         var list = new List<Passage>();
         foreach (var (view, file) in Sources)
         {
@@ -113,14 +126,32 @@ public static class MeetingSearch
         return list;
     }
 
-    static string Stamp(string folder) => string.Join("|", Sources.Select(s => Path.Combine(folder, s.File)).Where(File.Exists)
+    // Notatka .md: akapity i punkty (bez nagłówków, metadanych "---" na górze, bloków kodu), co najmniej 2 słowa.
+    public static List<Passage> NotePassages(string file)
+    {
+        var list = new List<Passage>();
+        var lines = File.ReadAllLines(file);
+        var start = lines.Length > 0 && lines[0].Trim() == "---" ? Array.FindIndex(lines, 1, l => l.Trim() == "---") + 1 : 0;
+        var code = false;
+        foreach (var raw in lines.Skip(start))
+        {
+            if (raw.TrimStart().StartsWith("```")) code = !code;
+            var text = Regex.Replace(raw.Trim(), @"^([-*+]|\d+\.|>)?\s*(\[[ xX]\]\s*)?|\*\*|\[\[|\]\]", "").Trim();
+            if (!code && !Regex.IsMatch(raw, @"^#+\s") && Regex.Matches(text, @"\p{L}{2,}").Count >= 2) list.Add(new("Note", "", text));
+        }
+        return list;
+    }
+
+    static string Stamp(string folder) => IsNote(folder) ? File.GetLastWriteTimeUtc(folder).Ticks.ToString() : string.Join("|", Sources.Select(s => Path.Combine(folder, s.File)).Where(File.Exists)
         .Select(f => $"{Path.GetFileName(f)}:{File.GetLastWriteTimeUtc(f).Ticks}"));
 
     // Indeks nagrania: z pamięci, z pliku albo na nowo (zmienione pliki). embed == null = bez wektorów (np. Ollama niedostępna).
     static async Task<Index> LoadAsync(string folder, string model, Func<IReadOnlyList<string>, Task<List<float[]>>>? embed)
     {
         var stamp = Stamp(folder);
-        var file = Path.Combine(folder, WorkNotes.Dir, IndexFile);
+        var file = IsNote(folder)
+            ? Path.Combine(NotesIndexDir, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(folder).ToLowerInvariant())))[..16] + ".json")
+            : Path.Combine(folder, WorkNotes.Dir, IndexFile);
         Index? index;
         lock (Cache) Cache.TryGetValue(folder, out index);
         if (index == null && File.Exists(file))
@@ -197,6 +228,129 @@ public static class MeetingSearch
         // kolejność folderów = od najnowszego; OrderBy jest stabilne. Ta sama wypowiedź w kilku plikach (transkrypcja wklejona do notatki Copilota) = raz.
         return [.. words.OrderByDescending(h => h.Score).DistinctBy(h => (h.Folder, h.Time, h.Text)),
             .. meanings.OrderByDescending(h => h.Score).DistinctBy(h => (h.Folder, h.Time, h.Text)).Take(MaxMeaningHits)];
+    }
+
+    // --- pytanie do Qwena: notatki -> nagrania -> transkrypcja -> model czyta i wskazuje fragmenty ---
+    const int AskRecordings = 4, AskWindows = 8, WindowRadius = 3, NotesChars = 2000;
+    // shortcut: luźniejszy próg niż w wyszukiwaniu (model i tak odrzuca nietrafione); przy złych wyborach nagrań podnieść.
+    const double AskMinSimilarity = 0.4, AskRankGap = 0.1;
+
+    // generate: zapytanie -> odpowiedź modelu (domyślnie Qwen z NotesModel); progress: co się teraz dzieje.
+    // Wynik: na nagranie odpowiedź modelu ("answer") i fragmenty transkrypcji, które ją potwierdzają ("fragment") - cytowane z pliku, nie przepisywane przez model.
+    public static async Task<List<SearchHit>> AskAsync(string question, IReadOnlyList<string> folders, Settings s, bool meaning,
+        Action<string>? progress, CancellationToken ct, Func<string, Task<string>>? generate = null)
+    {
+        generate ??= prompt => Ollama.GenerateAsync(prompt, s.NotesModel, s, ct, 400, temperature: 0.1);
+        var (phrases, stems) = Parse(question);
+        var exact = Words(Normalize(question));
+        Func<IReadOnlyList<string>, Task<List<float[]>>>? embed = meaning ? texts => Ollama.EmbedAsync(s, s.SearchModel, texts, ct) : null;
+        var queryVector = meaning ? Normalize((await Ollama.EmbedAsync(s, s.SearchModel, [QueryText(question)], ct))[0]) : null;
+
+        // 1. nagrania: notatka to streszczenie, więc trafienie w notatce liczy się bardziej niż w transkrypcji
+        var ranked = new List<(string Folder, Index Index, double[] Scores, double Rank)>();
+        for (var f = 0; f < folders.Count; f++)
+        {
+            progress?.Invoke($"Reading notes... {f}/{folders.Count} recordings");
+            var index = await LoadAsync(folders[f], s.SearchModel, embed);
+            var scores = index.Passages.Select((p, i) => (WordScore(p.Text, phrases, stems, exact) > 0 ? 0.5 : 0)
+                + (queryVector != null && index.Decoded is { } v && i < v.Count ? Dot(queryVector, v[i]) : 0)).ToArray();
+            double Best(Func<Passage, bool> where) => index.Passages.Select((p, i) => where(p) ? scores[i] : 0).DefaultIfEmpty(0).Max();
+            var rank = Math.Max(Best(p => !p.View.StartsWith("Transcript")), Best(p => p.View.StartsWith("Transcript")) * 0.9);
+            if (rank >= AskMinSimilarity) ranked.Add((folders[f], index, scores, rank));
+        }
+
+        var result = new List<SearchHit>();
+        // nagrania dużo słabsze od najlepszego model i tak "dopasowywał" na siłę (test: pytanie o serial -> odpowiedź ze spotkania BIM)
+        var top = ranked.Count > 0 ? ranked.Max(r => r.Rank) : 0;
+        var picked = ranked.Where(r => r.Rank >= top - AskRankGap).OrderByDescending(r => r.Rank).Take(AskRecordings).ToList();
+        foreach (var (folder, index, scores, rank) in picked)
+        {
+            ct.ThrowIfCancellationRequested();
+            // 2. transkrypcja: okna wokół najlepszych zdań, w tej wersji językowej, w której jest najlepsze trafienie
+            // notatka z folderu nie ma transkrypcji - model czyta samą notatkę
+            var transcript = Enumerable.Range(0, index.Passages.Count).Where(i => index.Passages[i].View.StartsWith("Transcript") || index.Passages[i].View == "Note").ToList();
+            if (transcript.Count == 0) continue;
+            var view = index.Passages[transcript.MaxBy(i => scores[i])].View;
+            var lines = transcript.Where(i => index.Passages[i].View == view).ToList();
+            var best = lines.Select((i, n) => (n, scores[i])).Where(x => x.Item2 > 0).OrderByDescending(x => x.Item2).Take(AskWindows).Select(x => x.n);
+            var windows = Windows(best, lines.Count, WindowRadius).Select(w => lines.GetRange(w.From, w.To - w.From + 1).Select(i => index.Passages[i]).ToList()).ToList();
+
+            // 3. Qwen czyta fragmenty i wskazuje te, które odpowiadają na pytanie
+            progress?.Invoke($"Qwen reads {Path.GetFileName(folder)}... ({result.Select(h => h.Folder).Distinct().Count()} answers so far)");
+            var notes = index.Passages.Where(p => p.View.StartsWith("Notes") && p.View[^2..] == view[^2..]).Select(p => "- " + p.Text);
+            var response = await generate(AskPrompt(question, string.Join("\n", notes), windows));
+            var (answer, ids) = ParseAnswer(response, windows.Count);
+            if (answer == null) continue;
+            // kontrola: zdanie-dowód przepisane przez model musi naprawdę być we wskazanych fragmentach i dotyczyć pytania (wynik zdania jak w wyszukiwaniu).
+            // Osobne pytanie TAK/NIE do modelu nie działało: odrzucało trafne i przepuszczało zmyślone (test na PLAN.md / instalacja.md).
+            var quoted = Quoted(response, ids.Select(id => windows[id - 1]).ToList());
+            if (quoted.Count == 0 || quoted.Max(p => scores[index.Passages.IndexOf(p)]) < AskMinSimilarity) continue;
+            var kind = KindOf(folder);
+            var notesView = view == "Note" ? view : File.Exists(Path.Combine(folder, MeetingNotes.FileName(view[^2..].ToLowerInvariant()))) ? "Notes " + view[^2..] : view;
+            result.Add(new(folder, kind, notesView, "", answer, "Qwen answer", rank));
+            foreach (var id in ids)
+            {
+                var w = windows[id - 1];
+                // zdanie-dowód oznaczone "» " (okno ma kilka wypowiedzi wokół)
+                result.Add(new(folder, kind, view, w[0].Time, string.Join("\n", w.Select(p => (quoted.Contains(p) ? "» " : "") + p.Text)), "fragment", rank));
+            }
+        }
+        progress?.Invoke("");
+        return result;
+    }
+
+    // Okna ±radius wokół wybranych linii, nakładające się i stykające scalone, po kolei.
+    public static List<(int From, int To)> Windows(IEnumerable<int> centers, int count, int radius)
+    {
+        var merged = new List<(int From, int To)>();
+        foreach (var c in centers.Order())
+        {
+            var (from, to) = (Math.Max(0, c - radius), Math.Min(count - 1, c + radius));
+            if (merged.Count > 0 && from <= merged[^1].To + 1) merged[^1] = (merged[^1].From, Math.Max(merged[^1].To, to));
+            else merged.Add((from, to));
+        }
+        return merged;
+    }
+
+    public static string AskPrompt(string question, string notes, IReadOnlyList<List<Passage>> windows)
+    {
+        var text = new StringBuilder();
+        text.AppendLine("Odpowiadasz na pytanie WYŁĄCZNIE na podstawie ponumerowanych fragmentów poniżej (transkrypcja spotkania albo notatka).");
+        text.AppendLine().AppendLine($"Pytanie: {question}");
+        if (notes.Length > 0) text.AppendLine().AppendLine("Notatka ze spotkania (tylko pomoc w zrozumieniu tematu, nie źródło odpowiedzi):").AppendLine(notes.Length > NotesChars ? notes[..NotesChars] : notes);
+        text.AppendLine().AppendLine("Fragmenty:");
+        for (var i = 0; i < windows.Count; i++)
+            text.AppendLine($"[{i + 1}]{(windows[i][0].Time.Length > 0 ? $" ({windows[i][0].Time})" : "")}").AppendLine(string.Join("\n", windows[i].Select(p => p.Text))).AppendLine();
+        text.AppendLine("Zasady:");
+        text.AppendLine("- Odpowiedź tylko z tego, co jest we fragmentach. Nie zgaduj i nie dodawaj faktów spoza fragmentów.");
+        text.AppendLine("- Jeśli żaden fragment nie odpowiada na pytanie, napisz: ODPOWIEDŹ: BRAK");
+        text.AppendLine("- Odpowiedź w 1-3 zdaniach, w języku pytania.");
+        text.AppendLine().AppendLine("Format, dokładnie trzy linie:");
+        text.AppendLine("ODPOWIEDŹ: <odpowiedź>");
+        text.AppendLine("FRAGMENTY: <numery fragmentów, które potwierdzają odpowiedź, np. 2, 5>");
+        text.AppendLine("CYTAT: <jedno zdanie przepisane DOSŁOWNIE z tych fragmentów, na którym opierasz odpowiedź>");
+        return text.ToString();
+    }
+
+    // Zdania fragmentów, które model przepisał (cytat ma >= 80% słów zdania albo zdanie >= 80% słów cytatu - model bywa, że przepisze dwa naraz);
+    // pusta lista = NIE albo cytat spoza fragmentów.
+    public static List<Passage> Quoted(string response, IReadOnlyList<List<Passage>> fragments)
+    {
+        if (Regex.IsMatch(response.Trim(), @"^\W*(NIE|NO)\W*$", RegexOptions.IgnoreCase)) return [];
+        var quote = Words(Normalize(Regex.Match(response, @"CYTAT\s*:\s*(.+)", RegexOptions.IgnoreCase | RegexOptions.Singleline) is { Success: true } m ? m.Groups[1].Value : response));
+        if (quote.Count < 3) return [];
+        static double Covered(List<string> part, List<string> whole) => part.Count == 0 ? 0 : (double)part.Count(whole.Contains) / part.Count;
+        return fragments.SelectMany(w => w).Select(p => (Passage: p, Words: Words(Normalize(p.Text))))
+            .Where(x => Math.Max(Covered(quote, x.Words), x.Words.Count >= 3 ? Covered(x.Words, quote) : 0) >= 0.8).Select(x => x.Passage).ToList();
+    }
+
+    // null = brak odpowiedzi (BRAK albo żaden poprawny numer fragmentu: odpowiedź bez dowodu w transkrypcji jest odrzucana).
+    public static (string? Answer, List<int> Fragments) ParseAnswer(string response, int windows)
+    {
+        var answer = Regex.Match(response, @"ODPOWIED[ŹZ]\s*:\s*(.+)", RegexOptions.IgnoreCase) is { Success: true } a ? a.Groups[1].Value.Trim() : "";
+        var ids = Regex.Match(response, @"FRAGMENTY\s*:\s*(.+)", RegexOptions.IgnoreCase) is { Success: true } f
+            ? Regex.Matches(f.Groups[1].Value, @"\d+").Select(m => int.Parse(m.Value)).Where(i => i >= 1 && i <= windows).Distinct().ToList() : [];
+        return answer.Length == 0 || answer.StartsWith("BRAK", StringComparison.OrdinalIgnoreCase) || ids.Count == 0 ? (null, []) : (answer, ids);
     }
 
     static double Dot(float[] a, float[] b)

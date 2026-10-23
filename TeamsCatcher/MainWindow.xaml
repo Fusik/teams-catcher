@@ -340,8 +340,12 @@
             <TabItem Header="SEARCH">
                 <DockPanel Height="340">
                     <DockPanel DockPanel.Dock="Top">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="14,4" Margin="8,0,0,0" Command="{Binding AskCommand}" Content="Ask Qwen"
+                                AutomationProperties.Name="Ask Qwen"
+                                ToolTip="Question in your words (co ustaliliśmy o stropie?). Notes point to the recordings, Qwen reads their transcript and picks the fragments that answer. ~10-20 s per recording." />
                         <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="14,4" Margin="8,0,0,0" Command="{Binding SearchCommand}" Content="Search"
                                 AutomationProperties.Name="Search" />
+                        <CheckBox DockPanel.Dock="Right" IsChecked="{Binding SearchNotes}" Content="Notes folder" Margin="12,0,0,0" VerticalAlignment="Center" />
                         <CheckBox DockPanel.Dock="Right" IsChecked="{Binding SearchVideo}" Content="Video files" Margin="12,0,0,0" VerticalAlignment="Center" />
                         <CheckBox DockPanel.Dock="Right" IsChecked="{Binding SearchTeams}" Content="Teams calls" Margin="12,0,0,0" VerticalAlignment="Center" />
                         <TextBox Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}" Padding="6,3" AutomationProperties.Name="Search query"
@@ -350,6 +354,17 @@
                                 <KeyBinding Key="Enter" Command="{Binding SearchCommand}" />
                             </TextBox.InputBindings>
                         </TextBox>
+                    </DockPanel>
+                    <!-- dodatkowy folder z notatkami .md (np. vault Obsidiana), przeszukiwany razem z nagraniami -->
+                    <DockPanel DockPanel.Dock="Top" Margin="0,6,0,0">
+                        <TextBlock DockPanel.Dock="Left" Style="{StaticResource Label}" Text="NOTES FOLDER" Margin="0,0,8,0" VerticalAlignment="Center"
+                                   ToolTip="Folder with .md notes (e.g. your Obsidian vault), searched with the recordings, subfolders too. The app only reads it." />
+                        <Button DockPanel.Dock="Right" Style="{StaticResource App.Button.Secondary}" Padding="10,3" Margin="8,0,0,0" Command="{Binding BrowseNotesFolderCommand}"
+                                AutomationProperties.Name="Choose notes folder" ToolTip="Choose the notes folder">
+                            <controls:WfIcon Kind="folder" />
+                        </Button>
+                        <TextBox Text="{Binding SearchNotesFolder, UpdateSourceTrigger=LostFocus}" Padding="6,2" AutomationProperties.Name="Notes folder"
+                                 ToolTip="Empty = recordings only" />
                     </DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="{Binding SearchStatus}" Margin="0,6" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}" TextWrapping="Wrap" />
                     <ListBox x:Name="SearchList" ItemsSource="{Binding SearchView}" SelectionChanged="SearchList_SelectionChanged" AutomationProperties.Name="Search results"
@@ -371,7 +386,23 @@
                                     <TextBlock FontSize="11" Foreground="{StaticResource WF.Brush.Slate}" TextTrimming="CharacterEllipsis">
                                         <Run Text="{Binding Recording, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding View, Mode=OneWay}" /><Run Text="  " /><Run Text="{Binding Time, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding Match, Mode=OneWay}" Foreground="{StaticResource WF.Brush.Cyan}" />
                                     </TextBlock>
-                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" MaxHeight="34" TextTrimming="CharacterEllipsis" FontSize="12" />
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" FontSize="12">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="MaxHeight" Value="34" />
+                                                <Style.Triggers>
+                                                    <!-- odpowiedź Qwena i fragment (kilka wypowiedzi) w całości -->
+                                                    <DataTrigger Binding="{Binding Match}" Value="Qwen answer">
+                                                        <Setter Property="MaxHeight" Value="200" />
+                                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Match}" Value="fragment">
+                                                        <Setter Property="MaxHeight" Value="200" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>

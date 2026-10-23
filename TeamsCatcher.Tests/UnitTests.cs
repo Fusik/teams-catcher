@@ -356,6 +356,110 @@ public class MeetingSearchTests : IDisposable
     }
 
     [Fact]
+    public void Windows_merge_overlapping_and_touching()
+    {
+        Assert.Equal([(0, 4), (6, 13)], MeetingSearch.Windows([1, 9, 12], 14, 3).ToArray());
+        Assert.Equal([(0, 9)], MeetingSearch.Windows([2, 6], 10, 3).ToArray()); // 0-5 i 3-9 nachodzą
+        Assert.Equal([(0, 2)], MeetingSearch.Windows([0], 3, 3).ToArray()); // przycięte do pliku
+    }
+
+    [Theory]
+    [InlineData("ODPOWIEDŹ: Strop wylewamy w piątek.\nFRAGMENTY: 2, 5", 5, "Strop wylewamy w piątek.", new[] { 2, 5 })]
+    [InlineData("ODPOWIEDZ: Tak.\nFRAGMENTY: [3], 9", 4, "Tak.", new[] { 3 })] // bez ogonka, numer spoza listy pominięty
+    [InlineData("ODPOWIEDŹ: BRAK\nFRAGMENTY: 1", 4, null, new int[0])]
+    [InlineData("ODPOWIEDŹ: Coś zmyślone.\nFRAGMENTY: brak", 4, null, new int[0])] // odpowiedź bez dowodu = odrzucona
+    public void Answer_needs_a_fragment_as_evidence(string response, int windows, string? answer, int[] ids)
+    {
+        var (a, f) = MeetingSearch.ParseAnswer(response, windows);
+        Assert.Equal(answer, a);
+        Assert.Equal(ids, f);
+    }
+
+    [Fact]
+    public async Task Ask_picks_recording_by_notes_and_quotes_transcript_fragments()
+    {
+        var transcript = string.Join("", Enumerable.Range(0, 20).Select(i => $"[0:00:{i:00}] Me: zdanie numer {i} o pogodzie.\n"))
+            + "[0:01:00] Speaker 1: Strop wylewamy w piątek rano.\n";
+        var call = Recording("2026-10-01_10-00-00_call", "Spotkanie | Microsoft Teams", transcript, "# t\n\n## Decyzje\n- Strop wylewamy w piątek\n");
+        Recording("2026-10-02_10-00-00_other", "Inne | Microsoft Teams", "[0:00:01] Me: Kupiłem rower.\n", "# t\n\n- Rozmowa o rowerze\n");
+        var prompts = new List<string>();
+
+        var hits = await MeetingSearch.AskAsync("strop", MeetingSearch.Recordings(_root), new Settings(), meaning: false, null, CancellationToken.None,
+            prompt => { prompts.Add(prompt); return Task.FromResult("ODPOWIEDŹ: Strop w piątek.\nFRAGMENTY: 1\nCYTAT: Strop wylewamy w piątek rano."); });
+
+        var prompt = Assert.Single(prompts); // nagranie o rowerze nie trafiło do modelu
+        Assert.Contains("Strop wylewamy w piątek rano.", prompt);
+        Assert.Equal("Qwen answer", hits[0].Match);
+        Assert.Equal("Notes PL", hits[0].View);
+        var fragment = Assert.Single(hits, h => h.Match == "fragment");
+        Assert.Equal(call, fragment.Folder);
+        Assert.Contains("Speaker 1: Strop wylewamy w piątek rano.", fragment.Text); // cytat z pliku, nie tekst modelu
+        Assert.Equal("Transcript PL", fragment.View);
+    }
+
+    [Fact]
+    public async Task Ask_drops_answer_whose_quote_is_not_in_the_fragments()
+    {
+        Recording("r1", "t", "[0:00:01] Me: Strop wylewamy w piątek.\n");
+        var hits = await MeetingSearch.AskAsync("strop", [Path.Combine(_root, "r1")], new Settings(), false, null, CancellationToken.None,
+            _ => Task.FromResult("ODPOWIEDŹ: Strop w poniedziałek.\nFRAGMENTY: 1\nCYTAT: Strop wylewamy w poniedziałek po południu."));
+        Assert.Empty(hits);
+    }
+
+    string Vault()
+    {
+        var vault = Directory.CreateDirectory(Path.Combine(_root, "vault")).FullName;
+        Directory.CreateDirectory(Path.Combine(vault, ".obsidian"));
+        Directory.CreateDirectory(Path.Combine(vault, "Projekty"));
+        File.WriteAllText(Path.Combine(vault, ".obsidian", "workspace.md"), "strop strop strop");
+        File.WriteAllText(Path.Combine(vault, "Projekty", "Most.md"),
+            "---\ntags: [strop]\n---\n# Most nad Wisłą\n\n- [ ] Sprawdzić **zbrojenie** stropu w [[Hala B]]\n```\nstrop w kodzie\n```\nOk.\n");
+        MeetingSearch.NotesIndexDir = Path.Combine(_root, "index");
+        return vault;
+    }
+
+    [Fact]
+    public void Note_passages_skip_metadata_headings_and_code()
+    {
+        var file = Path.Combine(Vault(), "Projekty", "Most.md");
+        Assert.Equal([new MeetingSearch.Passage("Note", "", "Sprawdzić zbrojenie stropu w Hala B")], MeetingSearch.NotePassages(file));
+        Assert.Equal([file], MeetingSearch.NoteFiles(Path.GetDirectoryName(Path.GetDirectoryName(file))!)); // bez .obsidian
+    }
+
+    [Fact]
+    public async Task Search_and_ask_cover_notes_folder_without_writing_into_it()
+    {
+        var vault = Vault();
+        var before = Directory.GetFiles(vault, "*", SearchOption.AllDirectories).Length;
+        var sources = MeetingSearch.NoteFiles(vault);
+
+        var hit = Assert.Single(await MeetingSearch.SearchAsync("strop", sources, new Settings(), false, null, CancellationToken.None));
+        Assert.Equal(MeetingSearch.Notes, hit.Kind);
+        Assert.Equal("Most.md", hit.Recording);
+
+        var asked = await MeetingSearch.AskAsync("strop", sources, new Settings(), false, null, CancellationToken.None,
+            _ => Task.FromResult("ODPOWIEDŹ: Trzeba sprawdzić zbrojenie.\nFRAGMENTY: 1\nCYTAT: Sprawdzić zbrojenie stropu w Hala B"));
+        Assert.Equal(["Qwen answer", "fragment"], asked.Select(h => h.Match).ToArray());
+        Assert.Equal("» Sprawdzić zbrojenie stropu w Hala B", asked[1].Text); // zdanie-dowód oznaczone
+        Assert.Equal(before, Directory.GetFiles(vault, "*", SearchOption.AllDirectories).Length); // indeks poza vaultem
+        Assert.NotEmpty(Directory.GetFiles(MeetingSearch.NotesIndexDir));
+    }
+
+    [Theory]
+    [InlineData("CYTAT: Strop wylewamy w piątek rano.", "Speaker 1: Strop wylewamy w piątek rano.")]
+    [InlineData("CYTAT: \"strop wylewamy w piatek rano\"", "Speaker 1: Strop wylewamy w piątek rano.")] // bez ogonków, w cudzysłowie
+    [InlineData("CYTAT: Me: Kupiłem rower. Speaker 1: Strop wylewamy w piątek rano.", "Speaker 1: Strop wylewamy w piątek rano.")] // dwa zdania naraz
+    [InlineData("CYTAT: Strop wylewamy w poniedziałek po południu.", null)] // zdania nie ma we fragmentach
+    [InlineData("NIE", null)]
+    public void Quote_must_really_be_in_the_fragments(string response, string? expected)
+    {
+        List<MeetingSearch.Passage> window = [new("Transcript PL", "0:00:01", "Me: Kupiłem rower."), new("Transcript PL", "0:00:05", "Speaker 1: Strop wylewamy w piątek rano.")];
+        var quoted = MeetingSearch.Quoted(response, [window]);
+        if (expected == null) Assert.Empty(quoted);
+        else Assert.Contains(quoted, p => p.Text == expected);
+    }
+
+    [Fact]
     public void Normalize_gives_unit_length()
     {
         var v = MeetingSearch.Normalize(Enumerable.Repeat(2f, 1024).ToArray());

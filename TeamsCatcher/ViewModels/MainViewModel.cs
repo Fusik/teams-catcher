@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -75,6 +75,8 @@ public sealed class MainViewModel : ObservableObject
         OpenNotesCommand = new RelayCommand(() => { if (NotesPath() is { } p) Process.Start(new ProcessStartInfo(p) { UseShellExecute = true }); });
         ImportVideoCommand = new RelayCommand(ChooseVideo);
         SearchCommand = new AsyncRelayCommand(SearchAsync);
+        AskCommand = new AsyncRelayCommand(AskAsync);
+        BrowseNotesFolderCommand = new RelayCommand(BrowseNotesFolder);
         SearchView = System.Windows.Data.CollectionViewSource.GetDefaultView(SearchResults);
         SearchView.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(SearchHit.Kind)));
         SaveRulesCommand = new RelayCommand(SaveRules);
@@ -382,8 +384,7 @@ public sealed class MainViewModel : ObservableObject
         SearchResults.Clear();
         var query = SearchQuery.Trim();
         if (query.Length == 0) return;
-        var folders = MeetingSearch.Recordings(_settings.OutputFolder)
-            .Where(f => MeetingSearch.KindOf(f) == MeetingSearch.Teams ? SearchTeams : SearchVideo).ToList();
+        var folders = SearchSources();
         var meaning = _settings.SearchModel.Length > 0 && (await Ollama.ModelsAsync(_settings, CancellationToken.None))?.Contains(_settings.SearchModel) == true;
         SearchStatus = "Searching...";
         try
@@ -392,7 +393,7 @@ public sealed class MainViewModel : ObservableObject
                 (done, total) => Application.Current.Dispatcher.BeginInvoke(() => SearchStatus = $"Searching... {done}/{total} recordings (the first search indexes them)"),
                 CancellationToken.None));
             foreach (var hit in hits) SearchResults.Add(hit);
-            SearchStatus = $"{hits.Count(h => h.Match == "words")} by words, {hits.Count(h => h.Match == "meaning")} by meaning, in {folders.Count} recordings."
+            SearchStatus = $"{hits.Count(h => h.Match == "words")} by words, {hits.Count(h => h.Match == "meaning")} by meaning, in {folders.Count} recordings and notes."
                 + (meaning ? "" : $" Search by meaning is off: download {(_settings.SearchModel.Length > 0 ? _settings.SearchModel : "the search model")} (tray menu: Components...).");
         }
         catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException or System.Text.Json.JsonException)
@@ -401,9 +402,81 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    public AsyncRelayCommand AskCommand { get; }
+
+    // Pytanie do Qwena: notatki wskazują nagrania, model czyta okna transkrypcji i wybiera fragmenty (cytowane z pliku).
+    async Task AskAsync()
+    {
+        SearchResults.Clear();
+        var question = SearchQuery.Trim();
+        if (question.Length == 0) return;
+        var folders = SearchSources();
+        var models = await Ollama.ModelsAsync(_settings, CancellationToken.None);
+        if (models?.Contains(_settings.NotesModel) != true)
+        {
+            SearchStatus = $"Ollama or {_settings.NotesModel} not available - use Search, or download the model (tray menu: Components...).";
+            return;
+        }
+        var meaning = _settings.SearchModel.Length > 0 && models.Contains(_settings.SearchModel);
+        SearchStatus = "Asking...";
+        if (_service.Transcribing) SearchStatus += " (an analysis is running - the answer may be slow)";
+        try
+        {
+            var clock = Stopwatch.StartNew();
+            var hits = await Task.Run(() => MeetingSearch.AskAsync(question, folders, _settings, meaning,
+                status => Application.Current.Dispatcher.BeginInvoke(() => { if (status.Length > 0) SearchStatus = status; }), CancellationToken.None));
+            foreach (var hit in hits) SearchResults.Add(hit);
+            var answers = hits.Count(h => h.Match == "Qwen answer");
+            SearchStatus = answers == 0 ? $"Qwen found no answer in the best matching recordings ({clock.Elapsed:mm\\:ss}). Try Search, or ask differently."
+                : $"{answers} recordings answer the question, {hits.Count - answers} fragments ({clock.Elapsed:mm\\:ss}). Fragments are quoted from the transcript.";
+        }
+        catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            SearchStatus = $"Ask failed: {e.Message}";
+        }
+    }
+
+    // Nagrania wg zaznaczonych grup + notatki .md ze wskazanego folderu.
+    List<string> SearchSources() =>
+    [
+        .. MeetingSearch.Recordings(_settings.OutputFolder).Where(f => MeetingSearch.KindOf(f) == MeetingSearch.Teams ? SearchTeams : SearchVideo),
+        .. SearchNotes ? MeetingSearch.NoteFiles(_settings.SearchNotesFolder) : [],
+    ];
+
+    bool _searchNotes = true;
+    public bool SearchNotes { get => _searchNotes; set => Set(ref _searchNotes, value); }
+    public string SearchNotesFolder
+    {
+        get => _settings.SearchNotesFolder;
+        set { _settings.SearchNotesFolder = value?.Trim() ?? ""; SaveSettings(); OnPropertyChanged(); }
+    }
+    public RelayCommand BrowseNotesFolderCommand { get; }
+
+    void BrowseNotesFolder()
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Notes folder to search (e.g. Obsidian vault)" };
+        if (Directory.Exists(_settings.SearchNotesFolder)) dialog.InitialDirectory = _settings.SearchNotesFolder;
+        if (dialog.ShowDialog() == true) SearchNotesFolder = dialog.FolderName;
+    }
+
+    // Notatka z folderu: w Obsidianie, jeśli leży w vaulcie (folder .obsidian wyżej), inaczej w domyślnym programie.
+    static void OpenNote(string file)
+    {
+        var vault = Path.GetDirectoryName(file);
+        while (vault != null && !Directory.Exists(Path.Combine(vault, ".obsidian"))) vault = Path.GetDirectoryName(vault);
+        var target = vault != null ? "obsidian://open?path=" + Uri.EscapeDataString(file) : file;
+        try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
+        catch (System.ComponentModel.Win32Exception) { Process.Start(new ProcessStartInfo(file) { UseShellExecute = true }); } // Obsidian niezainstalowany
+    }
+
     // Wynik -> nagranie (także starsze niż 10 na liście) i widok, w którym jest; przewinięcie robi okno.
     public void OpenHit(SearchHit hit)
     {
+        if (hit.Kind == MeetingSearch.Notes)
+        {
+            OpenNote(hit.Folder);
+            return;
+        }
         var item = Recordings.FirstOrDefault(r => r.Folder == hit.Folder);
         if (item == null) Recordings.Add(item = new RecordingItem(hit.Recording, hit.Folder, hit.Kind));
         SelectedRecording = item;
