@@ -487,13 +487,19 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // Wywoływane z dowolnego wątku (CatcherService, RecordingSession).
-    public void AddLog(string message) => Application.Current.Dispatcher.BeginInvoke(() =>
+    public void AddLog(string message)
+    {
+        FileLog.Write(message);
+        Application.Current.Dispatcher.BeginInvoke(() => ShowLog(message));
+    }
+
+    void ShowLog(string message)
     {
         if (message.TrimStart().StartsWith("step:")) _lastStep = message.Trim()[5..].Trim();
         _logLines.Enqueue($"{DateTime.Now:HH:mm:ss}  {message}");
         while (_logLines.Count > MaxLogLines) _logLines.Dequeue();
         Log = string.Join(Environment.NewLine, _logLines);
-    });
+    }
 
     void Refresh()
     {

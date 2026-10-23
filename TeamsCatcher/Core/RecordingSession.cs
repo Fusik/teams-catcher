@@ -480,7 +480,7 @@ public sealed class RecordingSession
 
     // Wołane też okresowo w trakcie nagrania, żeby po crashu znać starty strumieni.
     public void SaveInfo() =>
-        File.WriteAllText(Path.Combine(Folder, InfoJson), JsonSerializer.Serialize(Info, new JsonSerializerOptions { WriteIndented = true }));
+        SafeFile.WriteAllText(Path.Combine(Folder, InfoJson), JsonSerializer.Serialize(Info, new JsonSerializerOptions { WriteIndented = true }));
 
     public static bool HasFreeSpace(string folder, long minFreeBytes) =>
         new DriveInfo(Path.GetPathRoot(Path.GetFullPath(folder))!).AvailableFreeSpace >= minFreeBytes;

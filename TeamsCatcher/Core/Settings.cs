@@ -118,5 +118,5 @@ public sealed class Settings
     }
 
     public void Save(string path) =>
-        File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        SafeFile.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
 }

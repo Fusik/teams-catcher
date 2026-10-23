@@ -242,6 +242,45 @@ public class RecordingSessionTests
     }
 }
 
+public class SafeFileTests : IDisposable
+{
+    readonly string _dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tc-safe-{Guid.NewGuid()}")).FullName;
+
+    public void Dispose() => Directory.Delete(_dir, true);
+
+    [Fact]
+    public void Write_replaces_file_and_leaves_no_temp()
+    {
+        var path = Path.Combine(_dir, "session.json");
+        SafeFile.WriteAllText(path, "old");
+        SafeFile.WriteAllText(path, "new");
+        Assert.Equal("new", File.ReadAllText(path));
+        Assert.Equal([path], Directory.GetFiles(_dir));
+    }
+
+    [Fact]
+    public void Backup_keeps_edited_note_in_history()
+    {
+        var note = Path.Combine(_dir, "notes.pl.md");
+        SafeFile.Backup(note); // brak pliku = nic
+        File.WriteAllText(note, "poprawione ręcznie");
+        SafeFile.Backup(note);
+        var copy = Assert.Single(Directory.GetFiles(Path.Combine(_dir, WorkNotes.Dir, "history"), "notes.pl.*.md"));
+        Assert.Equal("poprawione ręcznie", File.ReadAllText(copy));
+    }
+
+    [Fact]
+    public void Log_appends_lines_to_daily_file()
+    {
+        FileLog.Folder = _dir;
+        FileLog.Write("first");
+        FileLog.Write("second");
+        var lines = File.ReadAllLines(Path.Combine(_dir, $"{DateTime.Now:yyyy-MM-dd}.log"));
+        Assert.EndsWith("first", lines[0]);
+        Assert.EndsWith("second", lines[1]);
+    }
+}
+
 public class SettingsTests : IDisposable
 {
     readonly string _path = Path.Combine(Path.GetTempPath(), $"tc-settings-{Guid.NewGuid()}.json");

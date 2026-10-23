@@ -451,7 +451,11 @@ public static class Transcriber
     {
         log($"Writing {what} (PL + EN, {settings.NotesModel})...");
         foreach (var (language, text) in await SttNotes.WriteAsync(segments, hypotheses, Path.GetFileName(folder), settings, log, ct))
-            await File.WriteAllTextAsync(Path.Combine(folder, MeetingNotes.FileName(language)), text, Encoding.UTF8, ct);
+        {
+            var file = Path.Combine(folder, MeetingNotes.FileName(language));
+            SafeFile.Backup(file); // notatka mogła być poprawiona ręcznie - przeliczenie jej nie gubi
+            await File.WriteAllTextAsync(file, text, Encoding.UTF8, ct);
+        }
     }
 
     // Początki SampleWindows okien po SampleWindowSeconds (rosnąco, bez nakładania) z największą liczbą "głośnych" sekund (RMS powyżej ćwierci
