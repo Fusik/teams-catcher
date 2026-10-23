@@ -7,7 +7,7 @@ using System.Text.Json;
 namespace TeamsCatcher.Core;
 
 // Category: TYPOS = nieistniejące słowo, GRAMMAR/SYNTAX = gramatyka (np. przypadek po przyimku).
-public sealed record LanguageIssue(int Offset, int Length, string Word, string Rule, string Message, string Category)
+public sealed record LanguageIssue(int Offset, int Length, string Word, string Rule, string Message, string Category, string[]? Replacements = null)
 {
     public bool Spelling => Category == "TYPOS";
     public bool Relevant => Category is "TYPOS" or "GRAMMAR" or "SYNTAX";
@@ -88,7 +88,8 @@ public sealed class LanguageTool : IAsyncDisposable
             var rule = m.GetProperty("rule");
             var category = rule.GetProperty("category").GetProperty("id").GetString() ?? "";
             var word = offset >= 0 && offset + length <= text.Length ? text.Substring(offset, length) : "";
-            return new LanguageIssue(offset, length, word, rule.GetProperty("id").GetString() ?? "", m.GetProperty("message").GetString() ?? "", category);
+            var replacements = m.TryGetProperty("replacements", out var r) ? r.EnumerateArray().Select(x => x.GetProperty("value").GetString() ?? "").ToArray() : [];
+            return new LanguageIssue(offset, length, word, rule.GetProperty("id").GetString() ?? "", m.GetProperty("message").GetString() ?? "", category, replacements);
         }).ToList();
     }
 

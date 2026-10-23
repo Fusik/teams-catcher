@@ -748,6 +748,27 @@ public class DebateTests
     }
 
     [Fact]
+    public void LanguageTool_suggestions_are_picked_by_number()
+    {
+        const string json = """{"matches":[{"message":"x","offset":0,"length":5,"replacements":[{"value":"szedł"},{"value":"sadł"}],"rule":{"id":"R","category":{"id":"TYPOS"}}}]}""";
+        var issue = LanguageTool.Parse(json, "szadł dalej")[0];
+        Assert.Equal(["szedł", "sadł"], issue.Replacements);
+        Assert.Equal("szedł", Debate.PickCandidate("1", [.. issue.Replacements!]));
+        Assert.Equal("sadł", Debate.PickCandidate("Odpowiedź: 2.", [.. issue.Replacements!]));
+        Assert.Null(Debate.PickCandidate("0", [.. issue.Replacements!]));
+        Assert.Null(Debate.PickCandidate("3", [.. issue.Replacements!]));
+    }
+
+    [Fact]
+    public void Notes_prompt_without_B_and_C_does_not_mention_three_models()
+    {
+        var alone = SttNotes.PartPrompt("pl", [new SttNotes.Line(0, "Ja", "Dzień dobry.", "", "")], "");
+        var three = SttNotes.PartPrompt("pl", [new SttNotes.Line(0, "Ja", "Dzień dobry.", "Dzień dobry.", "")], "");
+        Assert.DoesNotContain("A, B, C", alone);
+        Assert.Contains("A, B, C", three);
+    }
+
+    [Fact]
     public void Whisper_tokens_become_timed_words()
     {
         const string json = """
@@ -1309,5 +1330,29 @@ public class VoiceProfileTests
     {
         Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówcy"] = [0.3f, 1, 0] }, Me));
         Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówca 1"] = [1, 0.1f, 0], ["Rozmówca 2"] = [1, 0.15f, 0] }, Me));
+    }
+}
+
+public class WhisperStyleTests
+{
+    [Fact]
+    public void Default_prompt_has_punctuation_for_pl_and_en_but_not_for_auto_or_translation()
+    {
+        var s = new Settings();
+        Assert.Contains("--prompt \"Hello, welcome to the meeting. Let's get started.\" --carry-initial-prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "en"));
+        Assert.Contains("--prompt \"Dzień dobry, witam na spotkaniu. Zaczynamy.\"", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "pl"));
+        Assert.DoesNotContain("--prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "auto"));
+        Assert.DoesNotContain("--prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "pl", translate: true));
+    }
+
+    [Fact]
+    public void Long_monologue_is_split_into_paragraphs_at_sentence_ends()
+    {
+        var sentence = string.Concat(Enumerable.Repeat("word ", 30)).Trim() + "."; // 150 znaków
+        var segments = Enumerable.Range(0, 12).Select(i => new TranscriptSegment(i * 10_000L, i * 10_000L + 9_000, "Ja", sentence, "en")).ToList();
+        var turns = Transcriber.MergeTurns(segments);
+        Assert.True(turns.Count >= 3, $"turns: {turns.Count}");
+        Assert.All(turns, t => Assert.True(t.Text.Length < 900 + 200));
+        Assert.Equal(12, turns.Sum(t => t.Text.Split("word.").Length - 1));
     }
 }

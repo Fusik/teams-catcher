@@ -305,8 +305,9 @@ public static class Transcriber
                 log($"Transcription pass 1 done ({string.Join(", ", channels.Select(c => $"{c.Speaker}: {c.Language.ToUpperInvariant()}"))}), Whisper on {Devices.GetValueOrDefault("Whisper", "?")}.");
 
                 // nazwy własne z pierwszego przebiegu (model piszący) - zaufane słowa w dyskusji; pisownię objaśnia użytkownik w TO CLARIFY (baza wiedzy)
+                // po nagraniu/imporcie (nie kawałek): bez słowniczka i hipotez B/C - najpierw notatka wstępna z samego A, potem drugi przebieg (niżej)
                 glossary = "";
-                if (correct)
+                if (correct && mode == Mode.Chunk)
                 {
                     glossary = await TranscriptLlm.BuildGlossaryAsync(channels.SelectMany(c => c.Segments).ToList(), settings, ct);
                     log($"  step: glossary of names ({settings.CorrectionModel})");
@@ -322,7 +323,7 @@ public static class Transcriber
 
                 hypotheses = [];
                 heard = [];
-                if (correct) (hypotheses, heard) = await HypothesesAsync(channels, folder, settings, vad, ffmpeg, work, log, ct);
+                if (correct && mode == Mode.Chunk) (hypotheses, heard) = await HypothesesAsync(channels, folder, settings, vad, ffmpeg, work, log, ct);
                 // 3. rozmówcy po stronie Teams (diaryzacja + weryfikacja zdań odciskiem głosu)
                 var all = new List<TranscriptSegment>();
                 foreach (var c in channels)
@@ -344,6 +345,9 @@ public static class Transcriber
             else (segmentsFinal, hypotheses, heard, glossary) = (state.Segments, state.Hypotheses, state.Heard, state.Glossary);
             if (steps.HasFlag(Steps.Transcribe)) SaveStep(folder, Steps.Transcribe, watch, log);
             var writeNotes = llm && steps.HasFlag(Steps.Notes) && mode != Mode.Chunk;
+            // notatka wstępna od razu z samego A (Whisper large-v3); drugi przebieg (B, C, dyskusja) potwierdza i nadpisuje ją dokładniejszą
+            if (writeNotes && correct && hypotheses.Count == 0)
+                await WriteNotesAsync(folder, segmentsFinal, hypotheses, settings, log, ct, "preliminary notes (Whisper large-v3 only)");
             // Correct albo Notes po samej transkrypcji: hipotezy B/C (i -tr dla korekty) dopiero teraz, słowniczek nazw od piszącego
             if ((correct || writeNotes) && hypotheses.Count == 0 && mode != Mode.Chunk)
             {
@@ -413,9 +417,7 @@ public static class Transcriber
             // 9. notatka całości z 3 rozpoznań mowy (A Whisper large-v3, B turbo, C Qwen3-ASR), po polsku i po angielsku - notes.pl.md, notes.en.md
             if (writeNotes)
             {
-                log($"Writing meeting notes (PL + EN) from 3 speech recognitions ({settings.NotesModel})...");
-                foreach (var (language, text) in await SttNotes.WriteAsync(segmentsFinal, hypotheses, Path.GetFileName(folder), settings, log, ct))
-                    await File.WriteAllTextAsync(Path.Combine(folder, MeetingNotes.FileName(language)), text, Encoding.UTF8, ct);
+                await WriteNotesAsync(folder, segmentsFinal, hypotheses, settings, log, ct, "meeting notes from 3 speech recognitions");
                 SaveStep(folder, Steps.Notes, watch, log);
             }
             // notatka częściowa kawałka na żywo: dawny pipeline w głównym języku (Llama pisze, Qwen sprawdza)
@@ -442,6 +444,14 @@ public static class Transcriber
         {
             foreach (var file in temp) File.Delete(file);
         }
+    }
+
+    static async Task WriteNotesAsync(string folder, IReadOnlyList<TranscriptSegment> segments, IReadOnlyList<HypothesisWord> hypotheses, Settings settings,
+        Action<string> log, CancellationToken ct, string what)
+    {
+        log($"Writing {what} (PL + EN, {settings.NotesModel})...");
+        foreach (var (language, text) in await SttNotes.WriteAsync(segments, hypotheses, Path.GetFileName(folder), settings, log, ct))
+            await File.WriteAllTextAsync(Path.Combine(folder, MeetingNotes.FileName(language)), text, Encoding.UTF8, ct);
     }
 
     // Początki SampleWindows okien po SampleWindowSeconds (rosnąco, bez nakładania) z największą liczbą "głośnych" sekund (RMS powyżej ćwierci
@@ -567,7 +577,20 @@ public static class Transcriber
     // --carry-initial-prompt: bez tego prompt działa tylko na pierwsze 30 s nagrania.
     // translate: Whisper tłumaczy mowę od razu na angielski (-tr) - niezależna od tekstu PL kontrola sensu.
     // bez -np: wycisza też "found GPU device 0: CUDA0" i log pisał "Whisper on CPU" przy liczeniu na GPU
+    // Domyślny prompt z poprawną interpunkcją: bez niego Whisper na trudnym dźwięku (szybka mowa, początek w pół zdania) przechodzi w tryb "napisów" -
+    // same małe litery, prawie bez interpunkcji, powtórzone fragmenty (test 35 min po angielsku: 0 wielkich liter, 130 powtórzeń; z promptem: wielkie litery,
+    // interpunkcja, "PDMS", "Excel"). Prompt trafia do każdego okna (--carry-initial-prompt).
+    static string DefaultPrompt(string language) => language switch
+    {
+        "pl" => "Dzień dobry, witam na spotkaniu. Zaczynamy.",
+        "en" => "Hello, welcome to the meeting. Let's get started.",
+        _ => "",
+    };
+
     public static string BuildWhisperArgs(Settings s, string input, string outputBase, bool vad, string language, string prompt = "", string? model = null, bool translate = false) =>
+        BuildWhisperArgsCore(s, input, outputBase, vad, language, prompt.Length > 0 || translate ? prompt : DefaultPrompt(language), model, translate);
+
+    static string BuildWhisperArgsCore(Settings s, string input, string outputBase, bool vad, string language, string prompt, string? model, bool translate) =>
         $"-m \"{model ?? s.WhisperModel}\" -l {language} -f \"{input}\" -sns -ml 80 -sow -ojf -of \"{outputBase}\"" +
         (vad ? $" --vad -vm \"{s.WhisperVadModel}\"" : "") +
         (prompt.Length > 0 ? $" --prompt \"{prompt}\" --carry-initial-prompt" : "") + (translate ? " -tr" : "");
@@ -662,13 +685,17 @@ public static class Transcriber
     static List<string> Words(string text) =>
         text.Split((char[])[' ', ',', '.', '?', '!', ';', ':', '-', '"'], StringSplitOptions.RemoveEmptyEntries).Select(w => w.ToLowerInvariant()).ToList();
 
-    // Kolejne segmenty tego samego mówcy i języka (przerwa <= 2 s) = jedna wypowiedź.
+    // Kolejne segmenty tego samego mówcy i języka (przerwa <= 2 s) = jedna wypowiedź; ciągły monolog tnie się na akapity (po zdaniu od TurnSoftChars,
+    // najpóźniej przy TurnHardChars), inaczej jedna "wypowiedź" trwałaby minuty.
+    const int TurnSoftChars = 400, TurnHardChars = 900;
+
     public static List<TranscriptSegment> MergeTurns(IEnumerable<TranscriptSegment> segments)
     {
         var turns = new List<TranscriptSegment>();
         foreach (var s in segments.OrderBy(s => s.FromMs))
         {
-            if (turns.Count > 0 && turns[^1] is var last && last.Speaker == s.Speaker && last.Language == s.Language && s.FromMs - last.ToMs <= JoinGapMs)
+            if (turns.Count > 0 && turns[^1] is var last && last.Speaker == s.Speaker && last.Language == s.Language && s.FromMs - last.ToMs <= JoinGapMs
+                && last.Text.Length < TurnHardChars && !(last.Text.Length >= TurnSoftChars && last.Text.TrimEnd() is [.., '.' or '?' or '!' or '…']))
                 turns[^1] = last with { ToMs = s.ToMs, Text = last.Text + " " + s.Text, MinP = Math.Min(last.MinP, s.MinP) };
             else
                 turns.Add(s);

@@ -68,7 +68,13 @@ public static class SttNotes
     static string Rules(string language, string rules) => rules.Length == 0 ? "" : language == "pl"
         ? $"Zasady notatki od użytkownika:\n{rules}\n\n" : $"User's rules for the notes (may be written in Polish):\n{rules}\n\n";
 
-    public static string PartPrompt(string language, List<Line> part, string rules) => Rules(language, rules) + (language == "pl"
+    public static string PartPrompt(string language, List<Line> part, string rules) => Rules(language, rules) + (part.All(l => l.B.Length + l.C.Length == 0)
+        ? (language == "pl"
+            ? "Poniżej fragment rozmowy (ok. 10 min) z automatycznej transkrypcji - mogą w niej być przekręcone słowa; przyjmij wersję spójną z kontekstem rozmowy. Napisz po polsku przebieg tego fragmentu: 4-8 punktów, " +
+              "każdy w osobnej linii od \"- [g:mm:ss] \" (czas wypowiedzi), jedno-dwa pełne zdania z konkretami: kto, co, nazwy, liczby, powody. Pomiń powitania i rozmowy o niczym.\n\n## ROZMOWA\n"
+            : "Below is a part of a conversation (about 10 minutes) from an automatic transcript - some words may be garbled; take the version consistent with the context. Write in English what happened in this part: 4-8 points, " +
+              "each on its own line starting with \"- [h:mm:ss] \" (time of the statement), one or two full sentences with specifics: who, what, names, numbers, reasons. Skip greetings and small talk.\n\n## CONVERSATION\n")
+        : language == "pl"
         ? "Poniżej fragment rozmowy (ok. 10 min). Każdą wypowiedź rozpoznały 3 niezależne modele mowy: A, B, C. Porównaj je: gdzie się różnią, " +
           "przyjmij wersję spójną z kontekstem rozmowy (nazwy, liczby, sens); błędy rozpoznania pomiń. Napisz po polsku przebieg tego fragmentu: 4-8 punktów, " +
           "każdy w osobnej linii od \"- [g:mm:ss] \" (czas wypowiedzi), jedno-dwa pełne zdania z konkretami: kto, co, nazwy, liczby, powody. " +
