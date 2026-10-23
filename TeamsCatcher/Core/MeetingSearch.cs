@@ -284,7 +284,8 @@ public static class MeetingSearch
             // kontrola: zdanie-dowód przepisane przez model musi naprawdę być we wskazanych fragmentach i dotyczyć pytania (wynik zdania jak w wyszukiwaniu).
             // Osobne pytanie TAK/NIE do modelu nie działało: odrzucało trafne i przepuszczało zmyślone (test na PLAN.md / instalacja.md).
             var quoted = Quoted(response, ids.Select(id => windows[id - 1]).ToList());
-            if (quoted.Count == 0 || quoted.Max(p => scores[index.Passages.IndexOf(p)]) < AskMinSimilarity) continue;
+            // próg jak w wyszukiwaniu (0,5): przy 0,4 przechodził prawdziwy, ale obcy cytat (pytanie o crash -> zdanie z serialu)
+            if (quoted.Count == 0 || quoted.Max(p => scores[index.Passages.IndexOf(p)]) < MinSimilarity) continue;
             var kind = KindOf(folder);
             var notesView = view == "Note" ? view : File.Exists(Path.Combine(folder, MeetingNotes.FileName(view[^2..].ToLowerInvariant()))) ? "Notes " + view[^2..] : view;
             result.Add(new(folder, kind, notesView, "", answer, "Qwen answer", rank));

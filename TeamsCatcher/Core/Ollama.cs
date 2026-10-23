@@ -120,7 +120,8 @@ public static class Ollama
                 foreach (var other in loaded) await UnloadModelAsync(s, other.Name, ct);
         }
         // think: false - modele z trybem "myślenia" tylko wydłużają odpowiedź; num_predict + repeat_penalty: Llama 3.1 zapętliła się
-        var body = new { model, prompt, system, stream = false, think = false, options = new { temperature, num_ctx = contextTokens, num_predict = maxTokens, repeat_penalty = 1.1 } };
+        // seed: ten sam tekst + ten sam model = ta sama odpowiedź (notatka przeliczona drugi raz się nie zmienia, wyniki da się porównać)
+        var body = new { model, prompt, system, stream = false, think = false, options = new { temperature, seed = 42, num_ctx = contextTokens, num_predict = maxTokens, repeat_penalty = 1.1 } };
         using var response = await Http.PostAsJsonAsync(new Uri(new Uri(s.OllamaUrl), "/api/generate"), body, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Ollama {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(ct)}");

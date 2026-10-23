@@ -119,9 +119,11 @@ public partial class MainWindow : Window
             foreach (var needle in new[] { hit.Time.Length > 0 ? $"[{hit.Time}]" : "", hit.Text[..Math.Min(hit.Text.Length, 40)], hit.Text[..Math.Min(hit.Text.Length, 15)] })
                 if (needle.Length > 0 && (at = text.IndexOf(needle, StringComparison.Ordinal)) >= 0) break;
             if (at < 0) return;
-            var line = NotesBox.GetLineIndexFromCharacterIndex(at);
-            NotesBox.ScrollToLine(line);
-            NotesBox.Select(at, Math.Max(0, NotesBox.GetLineLength(line) - 1));
+            // cała wypowiedź do końca linii w pliku (GetLineLength zależy od ułożenia tekstu, którego tuż po zmianie jeszcze nie ma)
+            var end = text.IndexOf('\n', at);
+            NotesBox.Focus(); // zaznaczenie bez fokusu nie jest widoczne w tym motywie
+            NotesBox.Select(at, (end < 0 ? text.Length : end) - at);
+            NotesBox.ScrollToLine(NotesBox.GetLineIndexFromCharacterIndex(at));
         });
     }
 

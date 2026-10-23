@@ -116,6 +116,7 @@ public sealed class Settings
         s.SearchModel ??= defaults.SearchModel; // "" = wyszukiwanie tylko po słowach
         s.SearchNotesFolder ??= "";
         if (!Uri.TryCreate(s.OllamaUrl, UriKind.Absolute, out var ollama) || ollama.Scheme is not ("http" or "https")) s.OllamaUrl = defaults.OllamaUrl;
+        else if (!ollama.IsLoopback) log($"WARNING: OllamaUrl {ollama.Host} is not this computer - transcripts and notes are sent there.");
         if (string.IsNullOrWhiteSpace(s.DiarizationSegmentationModel)) s.DiarizationSegmentationModel = defaults.DiarizationSegmentationModel;
         if (string.IsNullOrWhiteSpace(s.DiarizationEmbeddingModel)) s.DiarizationEmbeddingModel = defaults.DiarizationEmbeddingModel;
         s.DiarizationThreshold = Math.Clamp(s.DiarizationThreshold, 0.1f, 1.5f);

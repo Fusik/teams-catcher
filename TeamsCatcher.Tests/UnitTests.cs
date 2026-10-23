@@ -486,6 +486,17 @@ public class SettingsTests : IDisposable
         Assert.Empty(_log);
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1:11434", false)]
+    [InlineData("http://localhost:11434", false)]
+    [InlineData("http://192.168.1.20:11434", true)]
+    public void Remote_ollama_is_reported(string url, bool warned)
+    {
+        new Settings { OllamaUrl = url }.Save(_path);
+        Settings.Load(_path, _log.Add);
+        Assert.Equal(warned, _log.Any(l => l.Contains("not this computer")));
+    }
+
     [Fact]
     public void Corrupt_file_gives_defaults_and_log()
     {
