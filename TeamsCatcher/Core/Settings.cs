@@ -48,6 +48,8 @@ public sealed class Settings
     public string CheckModel { get; set; } = Qwen;
     // model notatki (krok Notes): porównuje 3 rozpoznania mowy, pisze po polsku i po angielsku
     public string NotesModel { get; set; } = Qwen;
+    // wyszukiwanie po znaczeniu (zakładka SEARCH): model wektorów w Ollamie, wielojęzyczny (PL + EN); brak = tylko po słowach
+    public string SearchModel { get; set; } = "qwen3-embedding:0.6b";
     // Budżet VRAM na modele tekstu (MB); 0 = cała karta. Docelowy komputer: 6 GB. Mieszczą się oba = zostają w pamięci.
     public int VramBudgetMb { get; set; }
     public string WhisperCli { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "whisper-cli.exe");
@@ -109,6 +111,7 @@ public sealed class Settings
         if (string.IsNullOrWhiteSpace(s.CorrectionModel) || RetiredModels.Contains(s.CorrectionModel)) s.CorrectionModel = defaults.CorrectionModel;
         if (string.IsNullOrWhiteSpace(s.CheckModel) || RetiredModels.Contains(s.CheckModel)) s.CheckModel = defaults.CheckModel;
         if (string.IsNullOrWhiteSpace(s.NotesModel)) s.NotesModel = defaults.NotesModel;
+        s.SearchModel ??= defaults.SearchModel; // "" = wyszukiwanie tylko po słowach
         if (!Uri.TryCreate(s.OllamaUrl, UriKind.Absolute, out var ollama) || ollama.Scheme is not ("http" or "https")) s.OllamaUrl = defaults.OllamaUrl;
         if (string.IsNullOrWhiteSpace(s.DiarizationSegmentationModel)) s.DiarizationSegmentationModel = defaults.DiarizationSegmentationModel;
         if (string.IsNullOrWhiteSpace(s.DiarizationEmbeddingModel)) s.DiarizationEmbeddingModel = defaults.DiarizationEmbeddingModel;

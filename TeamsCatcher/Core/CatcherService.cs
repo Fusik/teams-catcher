@@ -37,7 +37,7 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
     {
         _stopping = ct;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        await Locked(() => RecordingSession.RecoverAsync(settings.OutputFolder, ffmpeg, log));
+        await Locked(async () => ResumeTranscriptions(await RecordingSession.RecoverAsync(settings.OutputFolder, ffmpeg, log)));
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
@@ -180,13 +180,63 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, RecordingSession.InfoJson), System.Text.Json.JsonSerializer.Serialize(
             new SessionInfo { Finalized = true, Started = DateTime.Now, Ended = DateTime.Now, Title = file }));
-        log($"Video file queued for transcription: {Path.GetFileName(file)}");
-        QueueJob(folder, AutoSteps.ToString(), async () =>
+        if (QueueImport(file, folder)) log($"Video file queued for transcription: {Path.GetFileName(file)}");
+        else Directory.Delete(folder, true);
+    }
+
+    bool QueueImport(string file, string folder) => QueueJob(folder, AutoSteps.ToString(), async () =>
         {
             var wav = Path.Combine(folder, RecordingSession.TranscriptWav);
-            await Transcriber.RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{file}\" -vn -ac 1 -ar 16000 -c:a pcm_s16le \"{wav}\"", folder, _stopping);
+            if (!File.Exists(wav)) // wznowienie po restarcie: dźwięk już wyciągnięty
+            {
+                // do pliku tymczasowego: przerwane wyciąganie nie zostawia uciętego transcript.wav, który wyglądałby na gotowy
+                var part = Path.Combine(folder, "transcript.part.wav");
+                try { await Transcriber.RunAsync(ffmpeg, $"-hide_banner -loglevel error -y -i \"{file}\" -vn -ac 1 -ar 16000 -c:a pcm_s16le \"{part}\"", folder, _stopping); }
+                catch (InvalidOperationException e)
+                {
+                    log($"No audio in {Path.GetFileName(file)} (file damaged, video only or unsupported format) - nothing to transcribe. {e.Message}");
+                    Directory.Delete(folder, true);
+                    return;
+                }
+                File.Move(part, wav);
+            }
             await Transcriber.RunAsync(folder, settings, ffmpeg, log, _stopping, AutoSteps);
         });
+
+    // Plik w folderze nagrania = zlecona analiza, która jeszcze się nie skończyła; zostaje po zamknięciu/crashu aplikacji (treść: krok).
+    public const string PendingFile = "transcribe.pending";
+
+    // Start aplikacji: analizy przerwane zamknięciem/crashem i nagrania odzyskane po crashu wracają do kolejki.
+    void ResumeTranscriptions(List<string> recovered)
+    {
+        if (!Directory.Exists(settings.OutputFolder)) return;
+        foreach (var folder in Directory.GetDirectories(settings.OutputFolder))
+        {
+            var marker = Path.Combine(folder, PendingFile);
+            var step = File.Exists(marker) ? File.ReadAllText(marker).Trim() : null;
+            if (step == null && !(settings.AutoTranscribe && recovered.Contains(folder))) continue;
+            // import przerwany przed wyciągnięciem dźwięku: od nowa z pliku źródłowego (ścieżka w session.json), jeśli wciąż jest
+            var source = File.Exists(Path.Combine(folder, RecordingSession.TranscriptWav)) ? null : ImportSource(folder);
+            if (source == null && !File.Exists(Path.Combine(folder, RecordingSession.TranscriptWav)))
+            {
+                File.Delete(marker);
+                continue;
+            }
+            log($"Resuming interrupted analysis: {Path.GetFileName(folder)}");
+            if (source != null) QueueImport(source, folder);
+            else if (step == Transcriber.Mode.Assemble.ToString() || step == null && LiveChunks.List(folder).Count > 0) QueueFinish(folder);
+            else QueueTranscription(folder, Enum.TryParse<Transcriber.Steps>(step, out var steps) ? steps : null);
+        }
+    }
+
+    static string? ImportSource(string folder)
+    {
+        try
+        {
+            var info = System.Text.Json.JsonSerializer.Deserialize<SessionInfo>(File.ReadAllText(Path.Combine(folder, RecordingSession.InfoJson)));
+            return info is { Imported: true } && File.Exists(info.Title) ? info.Title : null;
+        }
+        catch (Exception e) when (e is IOException or System.Text.Json.JsonException) { return null; }
     }
 
     // Folder analizowany teraz (nagranie albo kawałek live\NN); null = kolejka pusta.
@@ -210,9 +260,12 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
                 log($"{step} is already queued or running: {Path.GetFileName(folder)}");
                 return false;
             }
+        var marker = Path.Combine(folder, PendingFile);
+        File.WriteAllText(marker, step);
         Interlocked.Increment(ref _transcribing);
         _ = Task.Run(async () =>
         {
+            var interrupted = false;
             try
             {
                 await _transcribeGate.WaitAsync(_stopping);
@@ -223,6 +276,10 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
                     var clock = Stopwatch.StartNew();
                     await job();
                     log($"{step} finished in {clock.Elapsed:mm\\:ss}: {folder}");
+                    // indeks wyszukiwania od razu po analizie (szybkie: mały model, raz na nagranie)
+                    if (Directory.Exists(folder))
+                        try { await MeetingSearch.IndexAsync(folder, settings, _stopping); }
+                        catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException) { log($"Search index not built (later, at the first search): {e.Message}"); }
                 }
                 finally
                 {
@@ -230,11 +287,17 @@ public sealed class CatcherService(Settings settings, string ffmpeg, Action<stri
                     _transcribeGate.Release();
                 }
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException) { interrupted = _stopping.IsCancellationRequested; }
             catch (Exception e) { log($"Transcription failed: {e.Message}"); }
             finally
             {
-                lock (_queued) _queued.Remove(key);
+                lock (_queued)
+                {
+                    _queued.Remove(key);
+                    // zamknięcie aplikacji = znacznik zostaje (wznowienie przy starcie); błąd = bez ponawiania w kółko
+                    // drugi krok tego folderu w kolejce trzyma znacznik dalej
+                    if (!interrupted && !_queued.Any(k => k.StartsWith(folder + "|")) && Directory.Exists(folder)) File.Delete(marker);
+                }
                 Interlocked.Decrement(ref _transcribing);
             }
         });

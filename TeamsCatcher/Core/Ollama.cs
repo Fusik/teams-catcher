@@ -208,6 +208,16 @@ public static class Ollama
         }
     }
 
+    // Wektory znaczenia (wyszukiwanie po sensie, /api/embed): jeden na tekst, w kolejności wejścia. Model zwalnia VRAM po 2 min.
+    public static async Task<List<float[]>> EmbedAsync(Settings s, string model, IReadOnlyList<string> input, CancellationToken ct)
+    {
+        using var response = await Http.PostAsJsonAsync(new Uri(new Uri(s.OllamaUrl), "/api/embed"), new { model, input, keep_alive = "2m" }, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Ollama /api/embed {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(ct)}");
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        return json.RootElement.GetProperty("embeddings").EnumerateArray().Select(e => e.EnumerateArray().Select(v => v.GetSingle()).ToArray()).ToList();
+    }
+
     // Zainstalowane modele; null = serwer Ollamy nie odpowiada.
     public static async Task<HashSet<string>?> ModelsAsync(Settings s, CancellationToken ct)
     {

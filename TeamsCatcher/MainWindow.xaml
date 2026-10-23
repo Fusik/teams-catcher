@@ -192,7 +192,7 @@
                         <TextBlock Text="Open" />
                     </Button>
                 </DockPanel>
-                <TextBox Text="{Binding Notes, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" VerticalContentAlignment="Top"
+                <TextBox x:Name="NotesBox" Text="{Binding Notes, Mode=OneWay}" IsReadOnly="True" IsInactiveSelectionHighlightEnabled="True" TextWrapping="Wrap" VerticalContentAlignment="Top"
                          VerticalScrollBarVisibility="Auto" FontSize="12" Padding="8,6" Background="{StaticResource WF.Brush.Navy900}" />
             </DockPanel>
         </GroupBox>
@@ -334,6 +334,55 @@
                                    Text="Any recording (mp4, mkv, mov, mp3, wav...). Speakers are told apart by voice; the steps after the transcript follow the options on the Teams calls tab. The result appears in RECORDING below, the original file stays where it is." />
                     </StackPanel>
                 </Border>
+            </TabItem>
+
+            <!-- Wyszukiwanie w transkrypcjach i notatkach wszystkich nagrań: po słowach (z odmianą) i po znaczeniu; wyniki osobno dla rozmów Teams i plików wideo -->
+            <TabItem Header="SEARCH">
+                <DockPanel Height="340">
+                    <DockPanel DockPanel.Dock="Top">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource WF.Button.Primary}" Padding="14,4" Margin="8,0,0,0" Command="{Binding SearchCommand}" Content="Search"
+                                AutomationProperties.Name="Search" />
+                        <CheckBox DockPanel.Dock="Right" IsChecked="{Binding SearchVideo}" Content="Video files" Margin="12,0,0,0" VerticalAlignment="Center" />
+                        <CheckBox DockPanel.Dock="Right" IsChecked="{Binding SearchTeams}" Content="Teams calls" Margin="12,0,0,0" VerticalAlignment="Center" />
+                        <TextBox Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}" Padding="6,3" AutomationProperties.Name="Search query"
+                                 ToolTip="Words in any form, without Polish letters too (projekt = projektu, zolw = żółw). &quot;Exact phrase&quot; in quotes. Fragments with the same meaning are found too (termin oddania = deadline na piątek).">
+                            <TextBox.InputBindings>
+                                <KeyBinding Key="Enter" Command="{Binding SearchCommand}" />
+                            </TextBox.InputBindings>
+                        </TextBox>
+                    </DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding SearchStatus}" Margin="0,6" FontSize="11" Foreground="{StaticResource WF.Brush.Cyan}" TextWrapping="Wrap" />
+                    <ListBox x:Name="SearchList" ItemsSource="{Binding SearchView}" SelectionChanged="SearchList_SelectionChanged" AutomationProperties.Name="Search results"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" VirtualizingPanel.IsVirtualizingWhenGrouping="True">
+                        <ListBox.GroupStyle>
+                            <GroupStyle>
+                                <GroupStyle.HeaderTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Style="{StaticResource Label}" Margin="2,8,0,4">
+                                            <Run Text="{Binding Name, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding ItemCount, Mode=OneWay}" />
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </GroupStyle.HeaderTemplate>
+                            </GroupStyle>
+                        </ListBox.GroupStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,2">
+                                    <TextBlock FontSize="11" Foreground="{StaticResource WF.Brush.Slate}" TextTrimming="CharacterEllipsis">
+                                        <Run Text="{Binding Recording, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding View, Mode=OneWay}" /><Run Text="  " /><Run Text="{Binding Time, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding Match, Mode=OneWay}" Foreground="{StaticResource WF.Brush.Cyan}" />
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" MaxHeight="34" TextTrimming="CharacterEllipsis" FontSize="12" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="ToolTip" Value="Show in RESULT" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </DockPanel>
             </TabItem>
 
             <!-- Wszystko, co zmienia pracę modeli tekstu: zasady notatek, modele, rundy, język, baza wiedzy (słowniczek: TEAMS CALLS) -->

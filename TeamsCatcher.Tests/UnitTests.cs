@@ -281,6 +281,89 @@ public class SafeFileTests : IDisposable
     }
 }
 
+public class MeetingSearchTests : IDisposable
+{
+    readonly string _root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tc-search-{Guid.NewGuid()}")).FullName;
+
+    public void Dispose() => Directory.Delete(_root, true);
+
+    string Recording(string name, string title, string transcript, string? notes = null)
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_root, name)).FullName;
+        File.WriteAllText(Path.Combine(folder, RecordingSession.InfoJson), System.Text.Json.JsonSerializer.Serialize(new SessionInfo { Title = title, Finalized = true }));
+        File.WriteAllText(Path.Combine(folder, "transcript.pl.txt"), transcript);
+        if (notes != null) File.WriteAllText(Path.Combine(folder, MeetingNotes.FileName("pl")), notes);
+        return folder;
+    }
+
+    static double Score(string text, string query)
+    {
+        var (phrases, stems) = MeetingSearch.Parse(query);
+        return MeetingSearch.WordScore(text, phrases, stems, []);
+    }
+
+    [Theory]
+    [InlineData("Omówiliśmy budżet projektu.", "projekt")]
+    [InlineData("Rozmawialiśmy o projekcie stropu.", "projekt")]
+    [InlineData("Żółw jest w ogrodzie.", "zolw")]
+    [InlineData("Decyzje podjęte wczoraj.", "decyzja")]
+    [InlineData("Termin oddania to piątek, budżet bez zmian.", "piątek budżet")]
+    [InlineData("To jest ŁÓDŹ, nie Gdańsk.", "\"to jest lodz\"")]
+    public void Words_match_in_any_form_and_without_polish_letters(string text, string query) => Assert.True(Score(text, query) > 0);
+
+    [Theory]
+    [InlineData("Omówiliśmy budżet.", "projekt")]
+    [InlineData("Termin oddania to piątek.", "piątek budżet")] // każde słowo musi wystąpić
+    [InlineData("jest to łódź", "\"to jest lodz\"")] // fraza w kolejności
+    [InlineData("anything", "")]
+    public void No_match(string text, string query) => Assert.Equal(0, Score(text, query));
+
+    [Fact]
+    public void Passages_take_time_and_speaker_from_transcript_and_points_from_notes()
+    {
+        var folder = Recording("r1", "Spotkanie | Microsoft Teams", "[0:01:05] Speaker 1: Strop na poziomie +3.\n",
+            "# Notatka\n\n## Decyzje\n- **Strop** wylewamy w piątek\n- ok\n");
+        var passages = MeetingSearch.Passages(folder);
+        Assert.Contains(new MeetingSearch.Passage("Transcript PL", "0:01:05", "Speaker 1: Strop na poziomie +3."), passages);
+        Assert.Contains(passages, p => p.View == "Notes PL" && p.Text == "Strop wylewamy w piątek");
+        Assert.DoesNotContain(passages, p => p.Text == "ok"); // jedno słowo = nie punkt
+    }
+
+    [Fact]
+    public async Task Search_by_words_splits_teams_calls_and_video_files()
+    {
+        Recording("2026-10-01_10-00-00_call", "Spotkanie | Microsoft Teams", "[0:00:05] Me: Wysyłam projekt stropu.\n");
+        var video = Recording("2026-10-02_10-00-00_film", @"C:\Filmy\wywiad.mp4", "[0:00:07] Speaker 1: Projekty są gotowe.\n[0:00:09] Speaker 2: Nic tu.\n");
+        Assert.Equal(MeetingSearch.Video, MeetingSearch.KindOf(video));
+
+        var hits = await MeetingSearch.SearchAsync("projekt", MeetingSearch.Recordings(_root), new Settings(), meaning: false, null, CancellationToken.None);
+
+        Assert.Equal(2, hits.Count);
+        Assert.Contains(hits, h => h.Kind == MeetingSearch.Teams && h.Time == "0:00:05" && h.Match == "words");
+        Assert.Contains(hits, h => h.Kind == MeetingSearch.Video && h.Time == "0:00:07");
+        Assert.True(File.Exists(Path.Combine(video, WorkNotes.Dir, MeetingSearch.IndexFile)));
+    }
+
+    [Fact]
+    public async Task Index_is_rebuilt_after_the_transcript_changes()
+    {
+        var folder = Recording("r1", "t", "[0:00:01] Me: stary tekst\n");
+        var settings = new Settings();
+        Assert.Empty(await MeetingSearch.SearchAsync("nowy", [folder], settings, false, null, CancellationToken.None));
+        File.WriteAllText(Path.Combine(folder, "transcript.pl.txt"), "[0:00:01] Me: nowy tekst\n");
+        File.SetLastWriteTimeUtc(Path.Combine(folder, "transcript.pl.txt"), DateTime.UtcNow.AddMinutes(1));
+        Assert.Single(await MeetingSearch.SearchAsync("nowy", [folder], settings, false, null, CancellationToken.None));
+    }
+
+    [Fact]
+    public void Normalize_gives_unit_length()
+    {
+        var v = MeetingSearch.Normalize(Enumerable.Repeat(2f, 1024).ToArray());
+        Assert.Equal(1024, v.Length);
+        Assert.Equal(1, v.Sum(x => x * x), 3);
+    }
+}
+
 public class SettingsTests : IDisposable
 {
     readonly string _path = Path.Combine(Path.GetTempPath(), $"tc-settings-{Guid.NewGuid()}.json");

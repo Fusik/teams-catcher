@@ -68,6 +68,9 @@ public static class Components
             ("checker", s.CheckModel, "Correct option: checks the writer", 0L),
         })
             if (list.All(c => c.Url != model)) list.Add(new(id, $"Text model {model}", purpose, ComponentKind.OllamaModel, size, "", model));
+        if (s.SearchModel.Length > 0)
+            list.Add(new("search", $"Search model {s.SearchModel}", "SEARCH tab: finds fragments by meaning, not only by words", ComponentKind.OllamaModel,
+                s.SearchModel == "qwen3-embedding:0.6b" ? 639_000_000 : 0, "", s.SearchModel));
         list.AddRange([
             new("pyannote", "Python + PyTorch CUDA (pyannote, Qwen3-ASR)", "tells the other participants apart on the GPU and runs speech version C",
                 ComponentKind.PythonEnv, PyannoteDownload, s.PyannotePython, Target: Path.GetDirectoryName(s.PyannotePython)!),

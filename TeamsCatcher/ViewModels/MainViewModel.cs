@@ -74,6 +74,9 @@ public sealed class MainViewModel : ObservableObject
         SaveKnowledgeCommand = RedoCommand;
         OpenNotesCommand = new RelayCommand(() => { if (NotesPath() is { } p) Process.Start(new ProcessStartInfo(p) { UseShellExecute = true }); });
         ImportVideoCommand = new RelayCommand(ChooseVideo);
+        SearchCommand = new AsyncRelayCommand(SearchAsync);
+        SearchView = System.Windows.Data.CollectionViewSource.GetDefaultView(SearchResults);
+        SearchView.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(SearchHit.Kind)));
         SaveRulesCommand = new RelayCommand(SaveRules);
         OpenRulesCommand = new RelayCommand(() => { if (File.Exists(MeetingNotes.RulesPath)) Process.Start(new ProcessStartInfo(MeetingNotes.RulesPath) { UseShellExecute = true }); });
         SaveKnowledgeTextCommand = new RelayCommand(SaveKnowledgeText);
@@ -361,6 +364,50 @@ public sealed class MainViewModel : ObservableObject
     {
         foreach (var file in files) _service.ImportVideo(file);
         LoadRecordings();
+    }
+
+    // --- zakładka SEARCH: transkrypcje i notatki wszystkich nagrań, wyniki w grupach Teams calls / Video files ---
+    string _searchQuery = "", _searchStatus = "";
+    bool _searchTeams = true, _searchVideo = true;
+    public string SearchQuery { get => _searchQuery; set => Set(ref _searchQuery, value); }
+    public bool SearchTeams { get => _searchTeams; set => Set(ref _searchTeams, value); }
+    public bool SearchVideo { get => _searchVideo; set => Set(ref _searchVideo, value); }
+    public string SearchStatus { get => _searchStatus; private set => Set(ref _searchStatus, value); }
+    public ObservableCollection<SearchHit> SearchResults { get; } = [];
+    public System.ComponentModel.ICollectionView SearchView { get; }
+    public AsyncRelayCommand SearchCommand { get; }
+
+    async Task SearchAsync()
+    {
+        SearchResults.Clear();
+        var query = SearchQuery.Trim();
+        if (query.Length == 0) return;
+        var folders = MeetingSearch.Recordings(_settings.OutputFolder)
+            .Where(f => MeetingSearch.KindOf(f) == MeetingSearch.Teams ? SearchTeams : SearchVideo).ToList();
+        var meaning = _settings.SearchModel.Length > 0 && (await Ollama.ModelsAsync(_settings, CancellationToken.None))?.Contains(_settings.SearchModel) == true;
+        SearchStatus = "Searching...";
+        try
+        {
+            var hits = await Task.Run(() => MeetingSearch.SearchAsync(query, folders, _settings, meaning,
+                (done, total) => Application.Current.Dispatcher.BeginInvoke(() => SearchStatus = $"Searching... {done}/{total} recordings (the first search indexes them)"),
+                CancellationToken.None));
+            foreach (var hit in hits) SearchResults.Add(hit);
+            SearchStatus = $"{hits.Count(h => h.Match == "words")} by words, {hits.Count(h => h.Match == "meaning")} by meaning, in {folders.Count} recordings."
+                + (meaning ? "" : $" Search by meaning is off: download {(_settings.SearchModel.Length > 0 ? _settings.SearchModel : "the search model")} (tray menu: Components...).");
+        }
+        catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            SearchStatus = $"Search failed: {e.Message}";
+        }
+    }
+
+    // Wynik -> nagranie (także starsze niż 10 na liście) i widok, w którym jest; przewinięcie robi okno.
+    public void OpenHit(SearchHit hit)
+    {
+        var item = Recordings.FirstOrDefault(r => r.Folder == hit.Folder);
+        if (item == null) Recordings.Add(item = new RecordingItem(hit.Recording, hit.Folder, hit.Kind));
+        SelectedRecording = item;
+        ResultView = hit.View;
     }
 
     void ChooseVideo()

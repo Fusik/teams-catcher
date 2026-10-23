@@ -22,6 +22,8 @@ public sealed class SessionInfo
     public List<AudioTrack> SharedAudio { get; set; } = [];
     public double? MicStart { get; set; }
     public List<VideoSegment> Video { get; set; } = [];
+    // plik zaimportowany (zakładka VIDEO FILE): Title = pełna ścieżka źródła; rozmowa Teams: tytuł okna
+    [System.Text.Json.Serialization.JsonIgnore] public bool Imported => Path.IsPathRooted(Title);
 }
 
 // Dźwięk jednego procesu Teams (WebView2, proces mediów).
@@ -394,9 +396,11 @@ public sealed class RecordingSession
     }
 
     // Kończy sesje przerwane przez crash / zabicie procesu / wyłączenie prądu.
-    public static async Task RecoverAsync(string outputFolder, string ffmpeg, Action<string> log)
+    // Zwraca foldery odzyskanych nagrań (do transkrypcji).
+    public static async Task<List<string>> RecoverAsync(string outputFolder, string ffmpeg, Action<string> log)
     {
-        if (!Directory.Exists(outputFolder)) return;
+        var recovered = new List<string>();
+        if (!Directory.Exists(outputFolder)) return recovered;
         foreach (var folder in Directory.GetDirectories(outputFolder))
         {
             var json = Path.Combine(folder, InfoJson);
@@ -418,7 +422,9 @@ public sealed class RecordingSession
             if (RepairWav(Path.Combine(folder, MicWav)) > 0) info.MicStart ??= fallback;
             info.Ended ??= Directory.GetLastWriteTime(folder);
             await new RecordingSession(folder, ffmpeg, 0, 0, log, info).FinalizeAsync();
+            if (Directory.Exists(folder)) recovered.Add(folder);
         }
+        return recovered;
     }
 
     // WaveFileWriter zapisuje rozmiary w nagłówku dopiero przy zamknięciu; po crashu są 0. Zwraca liczbę bajtów danych.
