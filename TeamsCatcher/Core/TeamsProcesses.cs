@@ -46,6 +46,43 @@ public static class TeamsProcesses
         return result;
     }
 
+    // Wszystkie procesy rodziny Teams (ms-teams.exe i potomkowie) - do sondy poziomów.
+    public static List<int> FamilyPids(string processName) =>
+        Descendants(Snapshot(), Process.GetProcessesByName(processName).Select(p => p.Id)).Order().ToList();
+
+    // Diagnostyka: sesje audio, w których Windows widzi dźwięk (miernik sesji, niezależny od naszego nagrywania), z rodzicem, przynależnością do rodziny
+    // Teams i informacją, czy ten proces nagrywamy. Pusty wynik = nic nie gra. Tak znajdziemy proces, który gra głos rozmówców poza nagraniem.
+    public static string AudibleSessions(string processName, IReadOnlyCollection<int> captured)
+    {
+        var snapshot = Snapshot();
+        var family = Descendants(snapshot, Process.GetProcessesByName(processName).Select(p => p.Id));
+        static string Name(int pid)
+        {
+            try { return Process.GetProcessById(pid).ProcessName; }
+            catch (ArgumentException) { return "?"; }
+        }
+        var found = new List<string>();
+        using var devices = new MMDeviceEnumerator();
+        foreach (var device in devices.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            using (device)
+            {
+                var sessions = device.AudioSessionManager.Sessions;
+                for (var i = 0; i < sessions.Count; i++)
+                {
+                    var session = sessions[i];
+                    float peak;
+                    try { peak = session.AudioMeterInformation.MasterPeakValue; }
+                    catch (System.Runtime.InteropServices.COMException) { continue; }
+                    if (peak < 0.001f) continue;
+                    var pid = (int)session.GetProcessID;
+                    var parent = snapshot.FirstOrDefault(p => p.Pid == pid).Parent;
+                    found.Add($"{Name(pid)} {pid} (parent {Name(parent)} {parent}) {20 * Math.Log10(peak):F0} dB on \"{device.FriendlyName}\", " +
+                        $"{(family.Contains(pid) ? "Teams family" : "NOT Teams family")}, {(captured.Contains(pid) ? "captured" : "NOT CAPTURED")}");
+                }
+            }
+        return string.Join("; ", found);
+    }
+
     // Procesy z sesją audio na którymkolwiek aktywnym urządzeniu odtwarzania.
     static HashSet<int> SessionPids()
     {

@@ -26,9 +26,8 @@ Wersje i sumy SHA-256 są przypięte w `Core/Components.cs`. Plik o innej sumie 
 | Whisper large-v3-turbo (wersja B, na żywo) | Hugging Face ggerganov/whisper.cpp | 1,5 GB |
 | Java 21 (Temurin JRE 21.0.12.1) - tylko opcja Correct | GitHub adoptium | 47 MB |
 | LanguageTool 6.6 - tylko opcja Correct | languagetool.org | 240 MB |
-| Ollama 0.40.6 portable | GitHub ollama, **tylko gdy żadna Ollama nie działa** | 1,4 GB |
+| Ollama 0.40.7 portable | GitHub ollama, **tylko gdy żadna Ollama nie działa** | 1,4 GB |
 | Model notatki `hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M` | Ollama z Hugging Face | 3,0 GB |
-| Korekta: `hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0`, `hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0` | Ollama z Hugging Face | 2,7 + 1,6 GB |
 | Python 3.12.14 + PyTorch cu126 + pyannote.audio 4.0.7 + qwen-asr 0.0.6 | uv 0.12.18 (GitHub astral-sh), PyPI, download.pytorch.org | ~3 GB |
 | Qwen3-ASR-1.7B (wersja C) do `models\Qwen3-ASR-1.7B` | Hugging Face Qwen/Qwen3-ASR-1.7B (`snapshot_download` środowiskiem Pythona) | 4,7 GB |
 

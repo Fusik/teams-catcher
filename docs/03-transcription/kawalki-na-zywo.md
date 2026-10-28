@@ -1,5 +1,12 @@
 # Kawałki na żywo (podwójny zapis)
 
+> **Zmiana:** kawałki ~5 min z pełnym potokiem w trakcie rozmowy (opis niżej) zastąpiła lżejsza ścieżka `LiveNotesService`, bo Whisper large-v3 i Qwen nie mieszczą się
+> obok Whispera turbo w 6 GB VRAM. Teraz (`LiveNotesMinutes = 3`): transkrypcja na żywo Whisper turbo co ~30 s -> co 3 min notatka kawałka (Qwen, kontekst 8k, tylko gdy
+> Whisper turbo stoi, potem model zwolniony), dopisywana do notatek poprzednich kawałków (`live\live-notes.md`, widok "Live notes"; dymek w trayu). Nieznane słowa
+> (LanguageTool na CPU) od razu w `questions.json` - panel TO CLARIFY. Po rozmowie całość liczy się jak zwykle, bez składania z kawałków. Kod kawałków
+> (`Mode.Chunk`/`Assemble`, `LiveChunks`) zostaje dla starych nagrań.
+
+
 Włączone opcją **Live notes** (`LiveChunkMinutes = 5`, `0` = wyłączone). Dają dwie rzeczy:
 - notatki częściowe w trakcie rozmowy;
 - dużo krótsze czekanie po rozmowie, bo większość pracy jest już zrobiona.

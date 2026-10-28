@@ -19,8 +19,6 @@ public static class Debate
     const long SentenceGapMs = 1500;
     // słowo hipotezy B/C należy do zdania, gdy jego środek leży w czasie zdania (+ margines na różnice w czasach modeli)
     const long WordMarginMs = 300;
-    // więcej pytań na jedno nagranie to już nie pomoc, tylko praca dla użytkownika
-    const int MaxQuestions = 30;
     // baza wiedzy bieżącej transkrypcji (jedna transkrypcja naraz - kolejka w CatcherService)
     static KnowledgeBase _kb = new();
 
@@ -128,6 +126,16 @@ public static class Debate
                 var confirmed = u.AllAlternatives.Split(' ').Select(TranscriptLlm.Bare).ToHashSet();
                 var spelling = (await tool.CheckAsync(text, u.Language, ct))
                     .Where(x => x.Spelling && x.Word.Length > 0 && !trusted.Contains(TranscriptLlm.Bare(x.Word)) && !kb.Knows(x.Word)).ToList();
+                // nieistniejące słowo, które usłyszały wszystkie modele ("szadł"), SafeCorrection zostawia - podmiana na słowo ze słownika, wybrane przez model
+                var tokens = text.Split(' ');
+                foreach (var x in spelling.ToList())
+                {
+                    var at = Array.FindIndex(tokens, w => TranscriptLlm.Bare(w) == TranscriptLlm.Bare(x.Word));
+                    if (at < 0 || await RepairAsync(x, text, at, u.Language, topic, s, ct) is not { } fixedWord) continue;
+                    tokens[at] = tokens[at].Replace(x.Word, fixedWord);
+                    spelling.Remove(x);
+                }
+                text = string.Join(' ', tokens);
                 foreach (var x in spelling.Where(x => confirmed.Contains(TranscriptLlm.Bare(x.Word))))
                     unclear.Add(new UnclearTerm(x.Word, text.Replace("??", ""), Transcriber.Time(result[u.Segments[0]]), u.Language == "pl" ? "nieznane słowo" : "unknown word"));
                 var typos = spelling.Where(x => !confirmed.Contains(TranscriptLlm.Bare(x.Word))).Select(x => TranscriptLlm.Bare(x.Word)).ToHashSet();
@@ -149,12 +157,31 @@ public static class Debate
         var distinct = new List<UnclearTerm>();
         foreach (var x in unclear)
             if (!distinct.Any(d => KnowledgeBase.SameWord(TranscriptLlm.Bare(d.Term), TranscriptLlm.Bare(x.Term)))) distinct.Add(x);
-        unclear = distinct.Take(MaxQuestions).ToList();
+        unclear = distinct;
         log("  step: final spelling check (LanguageTool)");
         var marked = result.Sum(x => Regex.Matches(x.Text, @"\?\?[^?\s]+\?\?").Count);
         WriteModelNotes(notes, s, disputed, $"gotowe: zgoda w {disputed.Count - unresolved.Count} z {disputed.Count} spornych zdań, bez zgody {unresolved.Count}, oznaczonych słów {marked}");
         return new Result(result, disputed.Count, disputed.Count - unresolved.Count, unresolved.Count, marked, topic, unclear);
     }
+
+    // Kandydaci ze słownika LanguageTool (do 2 liter różnicy), model wybiera numer albo 0 = żaden. Nazwa własna w środku zdania zostaje (pytanie do użytkownika).
+    static async Task<string?> RepairAsync(LanguageIssue issue, string sentence, int index, string language, string topic, Settings s, CancellationToken ct)
+    {
+        if (index > 0 && TranscriptLlm.IsProperName(issue.Word)) return null;
+        var candidates = (issue.Replacements ?? []).Where(r => r.Length > 0 && !r.Contains(' ')
+            && Glossary.Distance(TranscriptLlm.Bare(r), TranscriptLlm.Bare(issue.Word)) <= 2).Take(5).ToList();
+        if (candidates.Count == 0) return null;
+        var list = string.Join("\n", candidates.Select((c, i) => $"{i + 1}. {c}"));
+        var pl = language == "pl";
+        var prompt = pl
+            ? $"W zdaniu z automatycznej transkrypcji słowo \"{issue.Word}\" nie istnieje w języku polskim.\nTemat rozmowy: {topic}\nZdanie: {sentence}\nKandydaci:\n{list}\n0. żaden (to nazwa, nazwisko albo obce słowo)\nKtóry kandydat to słowo, które mówca naprawdę powiedział? Odpowiedz samą cyfrą."
+            : $"In a sentence from an automatic transcript the word \"{issue.Word}\" does not exist.\nConversation topic: {topic}\nSentence: {sentence}\nCandidates:\n{list}\n0. none (it is a name or a foreign word)\nWhich candidate is the word the speaker really said? Answer with the number only.";
+        return PickCandidate(await Ask(prompt, s.CorrectionModel, s, ct), candidates);
+    }
+
+    // Pierwsza liczba odpowiedzi: 1..n = kandydat, 0 albo nic = null.
+    public static string? PickCandidate(string answer, List<string> candidates) =>
+        Regex.Match(answer, @"\d+") is { Success: true } m && int.Parse(m.Value) is > 0 and var n && n <= candidates.Count ? candidates[n - 1] : null;
 
     // Sens: Whisper -tr tłumaczy mowę na angielski niezależnie od tekstu PL - podpowiedź w dyskusji (model czyta angielski bezpośrednio).
     // Wcześniej: tłumaczenie z powrotem na PL + ocena "ten sam sens?" przez Gemmę jako wyzwalacz sporu. Pomiar na 9,6 min: "inny sens"

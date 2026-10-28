@@ -106,6 +106,27 @@ public partial class MainWindow : Window
         LanguageList.SelectedIndex = -1;
     }
 
+    // Wynik wyszukiwania -> nagranie i widok w panelu RESULT, przewinięte do znalezionego miejsca.
+    void SearchList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (e.AddedItems.Count == 0 || e.AddedItems[0] is not TeamsCatcher.Core.SearchHit hit) return;
+        Vm.OpenHit(hit);
+        // po odświeżeniu tekstu (binding Notes) - priorytet Background
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            var text = NotesBox.Text;
+            var at = -1;
+            foreach (var needle in new[] { hit.Time.Length > 0 ? $"[{hit.Time}]" : "", hit.Text[..Math.Min(hit.Text.Length, 40)], hit.Text[..Math.Min(hit.Text.Length, 15)] })
+                if (needle.Length > 0 && (at = text.IndexOf(needle, StringComparison.Ordinal)) >= 0) break;
+            if (at < 0) return;
+            // cała wypowiedź do końca linii w pliku (GetLineLength zależy od ułożenia tekstu, którego tuż po zmianie jeszcze nie ma)
+            var end = text.IndexOf('\n', at);
+            NotesBox.Focus(); // zaznaczenie bez fokusu nie jest widoczne w tym motywie
+            NotesBox.Select(at, (end < 0 ? text.Length : end) - at);
+            NotesBox.ScrollToLine(NotesBox.GetLineIndexFromCharacterIndex(at));
+        });
+    }
+
     void RecordingList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (e.AddedItems.Count == 0) return;

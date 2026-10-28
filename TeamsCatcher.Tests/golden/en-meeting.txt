@@ -1,0 +1,1 @@
+Good morning, let's review the clash report for building C. John Smith will update the Revit model by Monday. The steel schedule exported from Tekla is missing several beams. We agreed to freeze the design on Friday. Open question: who approves the changes to the foundation drawings?

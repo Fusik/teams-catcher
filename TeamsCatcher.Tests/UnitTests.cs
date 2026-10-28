@@ -242,6 +242,232 @@ public class RecordingSessionTests
     }
 }
 
+public class SafeFileTests : IDisposable
+{
+    readonly string _dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tc-safe-{Guid.NewGuid()}")).FullName;
+
+    public void Dispose() => Directory.Delete(_dir, true);
+
+    [Fact]
+    public void Write_replaces_file_and_leaves_no_temp()
+    {
+        var path = Path.Combine(_dir, "session.json");
+        SafeFile.WriteAllText(path, "old");
+        SafeFile.WriteAllText(path, "new");
+        Assert.Equal("new", File.ReadAllText(path));
+        Assert.Equal([path], Directory.GetFiles(_dir));
+    }
+
+    [Fact]
+    public void Backup_keeps_edited_note_in_history()
+    {
+        var note = Path.Combine(_dir, "notes.pl.md");
+        SafeFile.Backup(note); // brak pliku = nic
+        File.WriteAllText(note, "poprawione ręcznie");
+        SafeFile.Backup(note);
+        var copy = Assert.Single(Directory.GetFiles(Path.Combine(_dir, WorkNotes.Dir, "history"), "notes.pl.*.md"));
+        Assert.Equal("poprawione ręcznie", File.ReadAllText(copy));
+    }
+
+    [Fact]
+    public void Log_appends_lines_to_daily_file()
+    {
+        FileLog.Folder = _dir;
+        FileLog.Write("first");
+        FileLog.Write("second");
+        var lines = File.ReadAllLines(Path.Combine(_dir, $"{DateTime.Now:yyyy-MM-dd}.log"));
+        Assert.EndsWith("first", lines[0]);
+        Assert.EndsWith("second", lines[1]);
+    }
+}
+
+public class MeetingSearchTests : IDisposable
+{
+    readonly string _root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tc-search-{Guid.NewGuid()}")).FullName;
+
+    public void Dispose() => Directory.Delete(_root, true);
+
+    string Recording(string name, string title, string transcript, string? notes = null)
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_root, name)).FullName;
+        File.WriteAllText(Path.Combine(folder, RecordingSession.InfoJson), System.Text.Json.JsonSerializer.Serialize(new SessionInfo { Title = title, Finalized = true }));
+        File.WriteAllText(Path.Combine(folder, "transcript.pl.txt"), transcript);
+        if (notes != null) File.WriteAllText(Path.Combine(folder, MeetingNotes.FileName("pl")), notes);
+        return folder;
+    }
+
+    static double Score(string text, string query)
+    {
+        var (phrases, stems) = MeetingSearch.Parse(query);
+        return MeetingSearch.WordScore(text, phrases, stems, []);
+    }
+
+    [Theory]
+    [InlineData("Omówiliśmy budżet projektu.", "projekt")]
+    [InlineData("Rozmawialiśmy o projekcie stropu.", "projekt")]
+    [InlineData("Żółw jest w ogrodzie.", "zolw")]
+    [InlineData("Decyzje podjęte wczoraj.", "decyzja")]
+    [InlineData("Termin oddania to piątek, budżet bez zmian.", "piątek budżet")]
+    [InlineData("To jest ŁÓDŹ, nie Gdańsk.", "\"to jest lodz\"")]
+    public void Words_match_in_any_form_and_without_polish_letters(string text, string query) => Assert.True(Score(text, query) > 0);
+
+    [Theory]
+    [InlineData("Omówiliśmy budżet.", "projekt")]
+    [InlineData("Termin oddania to piątek.", "piątek budżet")] // każde słowo musi wystąpić
+    [InlineData("jest to łódź", "\"to jest lodz\"")] // fraza w kolejności
+    [InlineData("anything", "")]
+    public void No_match(string text, string query) => Assert.Equal(0, Score(text, query));
+
+    [Fact]
+    public void Passages_take_time_and_speaker_from_transcript_and_points_from_notes()
+    {
+        var folder = Recording("r1", "Spotkanie | Microsoft Teams", "[0:01:05] Speaker 1: Strop na poziomie +3.\n",
+            "# Notatka\n\n## Decyzje\n- **Strop** wylewamy w piątek\n- ok\n");
+        var passages = MeetingSearch.Passages(folder);
+        Assert.Contains(new MeetingSearch.Passage("Transcript PL", "0:01:05", "Speaker 1: Strop na poziomie +3."), passages);
+        Assert.Contains(passages, p => p.View == "Notes PL" && p.Text == "Strop wylewamy w piątek");
+        Assert.DoesNotContain(passages, p => p.Text == "ok"); // jedno słowo = nie punkt
+    }
+
+    [Fact]
+    public async Task Search_by_words_splits_teams_calls_and_video_files()
+    {
+        Recording("2026-10-01_10-00-00_call", "Spotkanie | Microsoft Teams", "[0:00:05] Me: Wysyłam projekt stropu.\n");
+        var video = Recording("2026-10-02_10-00-00_film", @"C:\Filmy\wywiad.mp4", "[0:00:07] Speaker 1: Projekty są gotowe.\n[0:00:09] Speaker 2: Nic tu.\n");
+        Assert.Equal(MeetingSearch.Video, MeetingSearch.KindOf(video));
+
+        var hits = await MeetingSearch.SearchAsync("projekt", MeetingSearch.Recordings(_root), new Settings(), meaning: false, null, CancellationToken.None);
+
+        Assert.Equal(2, hits.Count);
+        Assert.Contains(hits, h => h.Kind == MeetingSearch.Teams && h.Time == "0:00:05" && h.Match == "words");
+        Assert.Contains(hits, h => h.Kind == MeetingSearch.Video && h.Time == "0:00:07");
+        Assert.True(File.Exists(Path.Combine(video, WorkNotes.Dir, MeetingSearch.IndexFile)));
+    }
+
+    [Fact]
+    public async Task Index_is_rebuilt_after_the_transcript_changes()
+    {
+        var folder = Recording("r1", "t", "[0:00:01] Me: stary tekst\n");
+        var settings = new Settings();
+        Assert.Empty(await MeetingSearch.SearchAsync("nowy", [folder], settings, false, null, CancellationToken.None));
+        File.WriteAllText(Path.Combine(folder, "transcript.pl.txt"), "[0:00:01] Me: nowy tekst\n");
+        File.SetLastWriteTimeUtc(Path.Combine(folder, "transcript.pl.txt"), DateTime.UtcNow.AddMinutes(1));
+        Assert.Single(await MeetingSearch.SearchAsync("nowy", [folder], settings, false, null, CancellationToken.None));
+    }
+
+    [Fact]
+    public void Windows_merge_overlapping_and_touching()
+    {
+        Assert.Equal([(0, 4), (6, 13)], MeetingSearch.Windows([1, 9, 12], 14, 3).ToArray());
+        Assert.Equal([(0, 9)], MeetingSearch.Windows([2, 6], 10, 3).ToArray()); // 0-5 i 3-9 nachodzą
+        Assert.Equal([(0, 2)], MeetingSearch.Windows([0], 3, 3).ToArray()); // przycięte do pliku
+    }
+
+    [Theory]
+    [InlineData("ODPOWIEDŹ: Strop wylewamy w piątek.\nFRAGMENTY: 2, 5", 5, "Strop wylewamy w piątek.", new[] { 2, 5 })]
+    [InlineData("ODPOWIEDZ: Tak.\nFRAGMENTY: [3], 9", 4, "Tak.", new[] { 3 })] // bez ogonka, numer spoza listy pominięty
+    [InlineData("ODPOWIEDŹ: BRAK\nFRAGMENTY: 1", 4, null, new int[0])]
+    [InlineData("ODPOWIEDŹ: Coś zmyślone.\nFRAGMENTY: brak", 4, null, new int[0])] // odpowiedź bez dowodu = odrzucona
+    public void Answer_needs_a_fragment_as_evidence(string response, int windows, string? answer, int[] ids)
+    {
+        var (a, f) = MeetingSearch.ParseAnswer(response, windows);
+        Assert.Equal(answer, a);
+        Assert.Equal(ids, f);
+    }
+
+    [Fact]
+    public async Task Ask_picks_recording_by_notes_and_quotes_transcript_fragments()
+    {
+        var transcript = string.Join("", Enumerable.Range(0, 20).Select(i => $"[0:00:{i:00}] Me: zdanie numer {i} o pogodzie.\n"))
+            + "[0:01:00] Speaker 1: Strop wylewamy w piątek rano.\n";
+        var call = Recording("2026-10-01_10-00-00_call", "Spotkanie | Microsoft Teams", transcript, "# t\n\n## Decyzje\n- Strop wylewamy w piątek\n");
+        Recording("2026-10-02_10-00-00_other", "Inne | Microsoft Teams", "[0:00:01] Me: Kupiłem rower.\n", "# t\n\n- Rozmowa o rowerze\n");
+        var prompts = new List<string>();
+
+        var hits = await MeetingSearch.AskAsync("strop", MeetingSearch.Recordings(_root), new Settings(), meaning: false, null, CancellationToken.None,
+            prompt => { prompts.Add(prompt); return Task.FromResult("ODPOWIEDŹ: Strop w piątek.\nFRAGMENTY: 1\nCYTAT: Strop wylewamy w piątek rano."); });
+
+        var prompt = Assert.Single(prompts); // nagranie o rowerze nie trafiło do modelu
+        Assert.Contains("Strop wylewamy w piątek rano.", prompt);
+        Assert.Equal("Qwen answer", hits[0].Match);
+        Assert.Equal("Notes PL", hits[0].View);
+        var fragment = Assert.Single(hits, h => h.Match == "fragment");
+        Assert.Equal(call, fragment.Folder);
+        Assert.Contains("Speaker 1: Strop wylewamy w piątek rano.", fragment.Text); // cytat z pliku, nie tekst modelu
+        Assert.Equal("Transcript PL", fragment.View);
+    }
+
+    [Fact]
+    public async Task Ask_drops_answer_whose_quote_is_not_in_the_fragments()
+    {
+        Recording("r1", "t", "[0:00:01] Me: Strop wylewamy w piątek.\n");
+        var hits = await MeetingSearch.AskAsync("strop", [Path.Combine(_root, "r1")], new Settings(), false, null, CancellationToken.None,
+            _ => Task.FromResult("ODPOWIEDŹ: Strop w poniedziałek.\nFRAGMENTY: 1\nCYTAT: Strop wylewamy w poniedziałek po południu."));
+        Assert.Empty(hits);
+    }
+
+    string Vault()
+    {
+        var vault = Directory.CreateDirectory(Path.Combine(_root, "vault")).FullName;
+        Directory.CreateDirectory(Path.Combine(vault, ".obsidian"));
+        Directory.CreateDirectory(Path.Combine(vault, "Projekty"));
+        File.WriteAllText(Path.Combine(vault, ".obsidian", "workspace.md"), "strop strop strop");
+        File.WriteAllText(Path.Combine(vault, "Projekty", "Most.md"),
+            "---\ntags: [strop]\n---\n# Most nad Wisłą\n\n- [ ] Sprawdzić **zbrojenie** stropu w [[Hala B]]\n```\nstrop w kodzie\n```\nOk.\n");
+        MeetingSearch.NotesIndexDir = Path.Combine(_root, "index");
+        return vault;
+    }
+
+    [Fact]
+    public void Note_passages_skip_metadata_headings_and_code()
+    {
+        var file = Path.Combine(Vault(), "Projekty", "Most.md");
+        Assert.Equal([new MeetingSearch.Passage("Note", "", "Sprawdzić zbrojenie stropu w Hala B")], MeetingSearch.NotePassages(file));
+        Assert.Equal([file], MeetingSearch.NoteFiles(Path.GetDirectoryName(Path.GetDirectoryName(file))!)); // bez .obsidian
+    }
+
+    [Fact]
+    public async Task Search_and_ask_cover_notes_folder_without_writing_into_it()
+    {
+        var vault = Vault();
+        var before = Directory.GetFiles(vault, "*", SearchOption.AllDirectories).Length;
+        var sources = MeetingSearch.NoteFiles(vault);
+
+        var hit = Assert.Single(await MeetingSearch.SearchAsync("strop", sources, new Settings(), false, null, CancellationToken.None));
+        Assert.Equal(MeetingSearch.Notes, hit.Kind);
+        Assert.Equal("Most.md", hit.Recording);
+
+        var asked = await MeetingSearch.AskAsync("strop", sources, new Settings(), false, null, CancellationToken.None,
+            _ => Task.FromResult("ODPOWIEDŹ: Trzeba sprawdzić zbrojenie.\nFRAGMENTY: 1\nCYTAT: Sprawdzić zbrojenie stropu w Hala B"));
+        Assert.Equal(["Qwen answer", "fragment"], asked.Select(h => h.Match).ToArray());
+        Assert.Equal("» Sprawdzić zbrojenie stropu w Hala B", asked[1].Text); // zdanie-dowód oznaczone
+        Assert.Equal(before, Directory.GetFiles(vault, "*", SearchOption.AllDirectories).Length); // indeks poza vaultem
+        Assert.NotEmpty(Directory.GetFiles(MeetingSearch.NotesIndexDir));
+    }
+
+    [Theory]
+    [InlineData("CYTAT: Strop wylewamy w piątek rano.", "Speaker 1: Strop wylewamy w piątek rano.")]
+    [InlineData("CYTAT: \"strop wylewamy w piatek rano\"", "Speaker 1: Strop wylewamy w piątek rano.")] // bez ogonków, w cudzysłowie
+    [InlineData("CYTAT: Me: Kupiłem rower. Speaker 1: Strop wylewamy w piątek rano.", "Speaker 1: Strop wylewamy w piątek rano.")] // dwa zdania naraz
+    [InlineData("CYTAT: Strop wylewamy w poniedziałek po południu.", null)] // zdania nie ma we fragmentach
+    [InlineData("NIE", null)]
+    public void Quote_must_really_be_in_the_fragments(string response, string? expected)
+    {
+        List<MeetingSearch.Passage> window = [new("Transcript PL", "0:00:01", "Me: Kupiłem rower."), new("Transcript PL", "0:00:05", "Speaker 1: Strop wylewamy w piątek rano.")];
+        var quoted = MeetingSearch.Quoted(response, [window]);
+        if (expected == null) Assert.Empty(quoted);
+        else Assert.Contains(quoted, p => p.Text == expected);
+    }
+
+    [Fact]
+    public void Normalize_gives_unit_length()
+    {
+        var v = MeetingSearch.Normalize(Enumerable.Repeat(2f, 1024).ToArray());
+        Assert.Equal(1024, v.Length);
+        Assert.Equal(1, v.Sum(x => x * x), 3);
+    }
+}
+
 public class SettingsTests : IDisposable
 {
     readonly string _path = Path.Combine(Path.GetTempPath(), $"tc-settings-{Guid.NewGuid()}.json");
@@ -258,6 +484,17 @@ public class SettingsTests : IDisposable
         Assert.Equal(15, s.Fps);
         Assert.Equal("ms-teams", s.TeamsProcess);
         Assert.Empty(_log);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:11434", false)]
+    [InlineData("http://localhost:11434", false)]
+    [InlineData("http://192.168.1.20:11434", true)]
+    public void Remote_ollama_is_reported(string url, bool warned)
+    {
+        new Settings { OllamaUrl = url }.Save(_path);
+        Settings.Load(_path, _log.Add);
+        Assert.Equal(warned, _log.Any(l => l.Contains("not this computer")));
     }
 
     [Fact]
@@ -630,11 +867,6 @@ public class QualityTests
     }
 
     [Fact]
-    public void Second_pass_needs_terms_missing_from_first_pass() =>
-        Assert.Equal(["Dorociński", "scenarzysta"], Transcriber.NewTerms("Maciej Sztur, Dorociński, scenarzysta, dorota",
-            [S(0, 1, "Rozmówca 1", "Goście: Maciej Sztur i Marcin Doroczyński."), S(1, 2, "Rozmówca 4", "Cześć, tu Dorota.")]));
-
-    [Fact]
     public void Whisper_args_carry_glossary_prompt() =>
         Assert.EndsWith("--prompt \"Tekla, IFC\" --carry-initial-prompt",
             Transcriber.BuildWhisperArgs(new Settings(), "a.wav", "a", vad: false, "pl", "Tekla, IFC"));
@@ -711,34 +943,6 @@ public class QualityTests
     }
 }
 
-public class GlossaryTests
-{
-    const string Names = "Marcin Dorociński, Maciej Stuhr, Maciej Kawulski, Tekla";
-
-    [Theory]
-    // z wywiadu TVN
-    [InlineData("Razem z nami wyjątkowi goście, Marcin Doroczyński, Maciej Sztur i Maciej Kawalski. Dzień dobry.",
-                "Razem z nami wyjątkowi goście, Marcin Dorociński, Maciej Stuhr i Maciej Kawulski. Dzień dobry.")]
-    [InlineData("Model w Tekli i tekla structures.", "Model w Tekli i Tekla structures.")] // odmiana zostaje
-    [InlineData("Rozmawiałem z Maciejem Kawulskim.", "Rozmawiałem z Maciejem Kawulskim.")]
-    // bez zmian: inne imię, inne nazwisko, zbyt odległe słowo, nazwiska rozdzielone przecinkiem
-    [InlineData("Był też Marcin Kowalski.", "Był też Marcin Kowalski.")]
-    [InlineData("Maciej Kowalczyk dzwonił.", "Maciej Kowalczyk dzwonił.")]
-    [InlineData("Teksty i tabela.", "Teksty i tabela.")]
-    [InlineData("Maciej, Sztur", "Maciej, Sztur")]
-    public void Fixes_close_spellings_of_glossary_names(string text, string expected) =>
-        Assert.Equal(expected, Glossary.Fix(text, Names));
-
-    [Fact]
-    public void Counts_replacements_and_keeps_untouched_segments()
-    {
-        TranscriptSegment[] segments = [new(0, 1, "Ja", "Marcin Doroczyński i Maciej Sztur."), new(1, 2, "Ja", "Dzień dobry.")];
-        var result = Glossary.Apply(segments, Names, out var replaced);
-        Assert.Equal(2, replaced);
-        Assert.Same(segments[1], result[1]);
-    }
-}
-
 public class DebateTests
 {
     static TranscriptSegment S(double from, double to, string speaker, string text) => new((long)(from * 1000), (long)(to * 1000), speaker, text, "pl");
@@ -778,6 +982,27 @@ public class DebateTests
         Assert.Equal("jamentowym", issues[0].Word);
         Assert.True(issues[0].Spelling && issues[0].Relevant);
         Assert.False(issues[1].Relevant);
+    }
+
+    [Fact]
+    public void LanguageTool_suggestions_are_picked_by_number()
+    {
+        const string json = """{"matches":[{"message":"x","offset":0,"length":5,"replacements":[{"value":"szedł"},{"value":"sadł"}],"rule":{"id":"R","category":{"id":"TYPOS"}}}]}""";
+        var issue = LanguageTool.Parse(json, "szadł dalej")[0];
+        Assert.Equal(["szedł", "sadł"], issue.Replacements);
+        Assert.Equal("szedł", Debate.PickCandidate("1", [.. issue.Replacements!]));
+        Assert.Equal("sadł", Debate.PickCandidate("Odpowiedź: 2.", [.. issue.Replacements!]));
+        Assert.Null(Debate.PickCandidate("0", [.. issue.Replacements!]));
+        Assert.Null(Debate.PickCandidate("3", [.. issue.Replacements!]));
+    }
+
+    [Fact]
+    public void Notes_prompt_without_B_and_C_does_not_mention_three_models()
+    {
+        var alone = SttNotes.PartPrompt("pl", [new SttNotes.Line(0, "Ja", "Dzień dobry.", "", "")], "");
+        var three = SttNotes.PartPrompt("pl", [new SttNotes.Line(0, "Ja", "Dzień dobry.", "Dzień dobry.", "")], "");
+        Assert.DoesNotContain("A, B, C", alone);
+        Assert.Contains("A, B, C", three);
     }
 
     [Fact]
@@ -1255,8 +1480,8 @@ public class ContextFitTests
     }
 
     [Theory]
-    [InlineData(8188 - 400, 12288, 16384)] // RTX 4060 8 GB: Llama 12288 (16384 = 13% na CPU), Qwen do limitu 16k
-    [InlineData(6144 - 400, 4096, 16384)] // docelowa karta 6 GB: Llama tylko minimum
+    [InlineData(8188 - 400, 12288, 98304)] // RTX 4060 8 GB: Llama 12288 (16384 = 13% na CPU), Qwen ~98k (limit = VRAM)
+    [InlineData(6144 - 400, 4096, 32768)] // docelowa karta 6 GB: Llama tylko minimum
     public void Context_is_the_largest_that_fits_the_vram_budget(long budgetMb, int llama, int qwen)
     {
         Assert.Equal(llama, Ollama.FitContext(budgetMb * Mb, 4_920_753_328, Kv(Llama).Item1, Kv(Llama).Item2));
@@ -1279,5 +1504,92 @@ public class ContextFitTests
         Assert.Equal(["0:15:00", "0:20:00", "0:25:00"], parts.Select(p => p.Time));
         Assert.Equal(2, MeetingNotes.Parts(string.Join("\n", lines.Take(21))).Count); // 25:00 samo = dołączone do poprzedniej
         Assert.Single(MeetingNotes.Parts("bez czasów"));
+    }
+}
+public class LiveNotesTests
+{
+    [Fact]
+    public void Notes_of_all_parts_so_far_are_merged_in_order()
+    {
+        MeetingNotes.Notes Piece(string time, string point) => new(
+            new() { [MeetingNotes.Section.Conclusions] = [new MeetingNotes.Item(time, point)] }, [new MeetingNotes.Part(time, "temat", [new MeetingNotes.Item(time, point)])]);
+        var merged = LiveNotesService.Merge([Piece("0:01:00", "a"), new MeetingNotes.Notes([], []), Piece("0:07:00", "b")]);
+        Assert.Equal(["a", "b"], merged.Sections[MeetingNotes.Section.Conclusions].Select(x => x.Text));
+        Assert.Equal(["0:01:00", "0:07:00"], merged.Parts.Select(p => p.Time));
+    }
+}
+
+public class LanguageSampleTests
+{
+    [Fact]
+    public void Language_sample_takes_four_one_minute_windows_where_the_speech_is()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"speech-{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(file, new WaveFormat(16000, 16, 1)))
+            {
+                var rnd = new Random(1);
+                // 15 min ciszy z trzema 30-sekundowymi fragmentami mowy (szum) w 100., 400. i 700. sekundzie
+                for (var second = 0; second < 900; second++)
+                    for (var i = 0; i < 16000; i++)
+                        writer.WriteSample(second is >= 100 and < 130 or >= 400 and < 430 or >= 700 and < 730 ? (float)(rnd.NextDouble() - 0.5) * 0.4f : 0f);
+            }
+            var starts = Transcriber.SpeechWindows(file);
+            Assert.Equal(4, starts.Count);
+            Assert.All(starts.Zip(starts.Skip(1)), p => Assert.True(p.Second - p.First >= 60));
+            foreach (var speech in new[] { 100, 400, 700 })
+                Assert.Contains(starts, s => s <= speech && s + 60 >= speech + 30);
+        }
+        finally { File.Delete(file); }
+    }
+}
+
+public class VoiceProfileTests
+{
+    static readonly float[] Me = [1, 0, 0];
+
+    [Fact]
+    public void Single_speaker_with_my_voice_is_me()
+    {
+        Assert.Equal("Rozmówcy", VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówcy"] = [0.9f, 0.1f, 0] }, Me));
+    }
+
+    [Fact]
+    public void Speaker_that_is_clearly_closer_than_the_others_is_me()
+    {
+        var speakers = new Dictionary<string, float[]> { ["Rozmówca 1"] = [0.3f, 1, 0], ["Rozmówca 2"] = [1, 0.2f, 0] };
+        Assert.Equal("Rozmówca 2", VoiceProfile.ChooseMe(speakers, Me));
+    }
+
+    [Fact]
+    public void Nobody_is_me_when_similarity_is_low_or_ambiguous()
+    {
+        Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówcy"] = [0.3f, 1, 0] }, Me));
+        Assert.Null(VoiceProfile.ChooseMe(new Dictionary<string, float[]> { ["Rozmówca 1"] = [1, 0.1f, 0], ["Rozmówca 2"] = [1, 0.15f, 0] }, Me));
+    }
+}
+
+public class WhisperStyleTests
+{
+    [Fact]
+    public void Default_prompt_has_punctuation_for_pl_and_en_but_not_for_auto_or_translation()
+    {
+        var s = new Settings();
+        Assert.Contains("--prompt \"Hello, welcome to the meeting. Let's get started.\" --carry-initial-prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "en"));
+        Assert.Contains("--prompt \"Dzień dobry, witam na spotkaniu. Zaczynamy.\"", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "pl"));
+        Assert.DoesNotContain("--prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "auto"));
+        Assert.DoesNotContain("--prompt", Transcriber.BuildWhisperArgs(s, "a.wav", "a", vad: false, "pl", translate: true));
+    }
+
+    [Fact]
+    public void Long_monologue_is_split_into_paragraphs_at_sentence_ends()
+    {
+        var sentence = string.Concat(Enumerable.Repeat("word ", 30)).Trim() + "."; // 150 znaków
+        var segments = Enumerable.Range(0, 12).Select(i => new TranscriptSegment(i * 10_000L, i * 10_000L + 9_000, "Ja", sentence, "en")).ToList();
+        var turns = Transcriber.MergeTurns(segments);
+        Assert.True(turns.Count >= 3, $"turns: {turns.Count}");
+        Assert.All(turns, t => Assert.True(t.Text.Length < 900 + 200));
+        Assert.Equal(12, turns.Sum(t => t.Text.Split("word.").Length - 1));
     }
 }

@@ -31,7 +31,7 @@ public sealed class KnowledgeBase
         catch (JsonException) { return new KnowledgeBase(); }
     }
 
-    public void Save(string path) => File.WriteAllText(path, JsonSerializer.Serialize(this, Json));
+    public void Save(string path) => SafeFile.WriteAllText(path, JsonSerializer.Serialize(this, Json));
 
     // Dopisanie albo zmiana znaczenia (ten sam termin bez względu na wielkość liter).
     public void Add(KnowledgeEntry entry)

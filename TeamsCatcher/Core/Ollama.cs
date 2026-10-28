@@ -19,7 +19,7 @@ public static class Ollama
     // między 4096 a 16k: notatki idą 5-minutowymi częściami (~2-3 tys. tokenów), większy kontekst tylko zajmuje VRAM,
     // a kontekst wypchnięty do RAM liczy się wielokrotnie wolniej. Ten sam dla wszystkich zapytań do modelu: Ollama 0.40 nie przeładowuje modelu, gdy kolejne zapytanie
     // chce większego num_ctx - dyskusja (4096) ładowała model pierwsza, a notatki (8192) dostawały ucięty początek promptu.
-    public const int MinContext = 4096, MaxContext = 16384;
+    public const int MinContext = 4096, MaxContext = 262144; // praktycznie limit modelu (Qwen 3.5: 256k), reszta = ile mieści VRAM
     // bufory obliczeń i reszta poza wagami i kontekstem: RTX 4060 8 GB - Llama 8B z 16384 weszła w 13% na CPU, z 12288 w 100% na GPU
     // (zapas 500 MB dawał 16384 i przeładowanie przy każdym starcie)
     const long Overhead = 1536L * 1024 * 1024;
@@ -28,7 +28,16 @@ public static class Ollama
     // nowy budżet VRAM (zakładka MODELS) = konteksty liczone od nowa
     public static void ResetContexts() => Contexts.Clear();
 
+    // Górny limit kontekstu dla zapytań z tego przepływu zadań (notatki w trakcie rozmowy, obok Whispera: mały kontekst = mało VRAM); 0 = bez limitu.
+    public static readonly AsyncLocal<int> ContextLimit = new();
+
     public static async Task<int> ContextAsync(string model, Settings s, CancellationToken ct)
+    {
+        var context = await FittingContextAsync(model, s, ct);
+        return ContextLimit.Value is > 0 and var limit ? Math.Min(context, limit) : context;
+    }
+
+    static async Task<int> FittingContextAsync(string model, Settings s, CancellationToken ct)
     {
         if (Contexts.TryGetValue(model, out var known)) return known;
         int context;
@@ -111,7 +120,8 @@ public static class Ollama
                 foreach (var other in loaded) await UnloadModelAsync(s, other.Name, ct);
         }
         // think: false - modele z trybem "myślenia" tylko wydłużają odpowiedź; num_predict + repeat_penalty: Llama 3.1 zapętliła się
-        var body = new { model, prompt, system, stream = false, think = false, options = new { temperature, num_ctx = contextTokens, num_predict = maxTokens, repeat_penalty = 1.1 } };
+        // seed: ten sam tekst + ten sam model = ta sama odpowiedź (notatka przeliczona drugi raz się nie zmienia, wyniki da się porównać)
+        var body = new { model, prompt, system, stream = false, think = false, options = new { temperature, seed = 42, num_ctx = contextTokens, num_predict = maxTokens, repeat_penalty = 1.1 } };
         using var response = await Http.PostAsJsonAsync(new Uri(new Uri(s.OllamaUrl), "/api/generate"), body, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Ollama {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(ct)}");
@@ -125,7 +135,7 @@ public static class Ollama
             {
                 Log?.Invoke($"  model {model} loaded: {Placement(info.Size, info.Vram)}, context {info.Context}");
                 // Ollama liczy własne bufory - część na CPU = mniejszy kontekst i przeładowanie przy następnym zapytaniu
-                if (info.Vram < info.Size && contextTokens > MinContext)
+                if (info.Vram < info.Size && contextTokens > MinContext && ContextLimit.Value == 0)
                 {
                     Contexts[model] = Math.Max(MinContext, contextTokens * 3 / 4 / 2048 * 2048);
                     Log?.Invoke($"  model {model} did not fit on the GPU - context reduced to {Contexts[model]}");
@@ -197,6 +207,16 @@ public static class Ollama
         {
             // Ollama niedostępna = nic nie trzyma pamięci
         }
+    }
+
+    // Wektory znaczenia (wyszukiwanie po sensie, /api/embed): jeden na tekst, w kolejności wejścia. Model zwalnia VRAM po 2 min.
+    public static async Task<List<float[]>> EmbedAsync(Settings s, string model, IReadOnlyList<string> input, CancellationToken ct)
+    {
+        using var response = await Http.PostAsJsonAsync(new Uri(new Uri(s.OllamaUrl), "/api/embed"), new { model, input, keep_alive = "2m" }, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Ollama /api/embed {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(ct)}");
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        return json.RootElement.GetProperty("embeddings").EnumerateArray().Select(e => e.EnumerateArray().Select(v => v.GetSingle()).ToArray()).ToList();
     }
 
     // Zainstalowane modele; null = serwer Ollamy nie odpowiada.

@@ -125,7 +125,7 @@ public static class Diarizer
         return result;
     }
 
-    static float[] ReadSamples(string wav)
+    internal static float[] ReadSamples(string wav)
     {
         using var reader = new WaveFileReader(wav);
         if (reader.WaveFormat.SampleRate != 16000 || reader.WaveFormat.Channels != 1)
@@ -146,7 +146,7 @@ public static class Diarizer
         return best != current && bestSimilarity >= VerifyMinSimilarity && bestSimilarity - currentSimilarity >= VerifyMargin ? best : current;
     }
 
-    static double Cosine(float[] a, float[] b)
+    internal static double Cosine(float[] a, float[] b)
     {
         double dot = 0, na = 0, nb = 0;
         for (var i = 0; i < a.Length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }

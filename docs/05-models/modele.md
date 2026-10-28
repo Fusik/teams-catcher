@@ -16,11 +16,9 @@ a wyjście parakeet-cli czytane w złym kodowaniu dawało krzaczki.
 
 | Model | Ustawienie | Rola | Rozmiar |
 |---|---|---|---|
-| Qwen 3.5 4B Q3_K_M (`hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M`) | `NotesModel` | **jedyny model notatki**: porównuje wersje A/B/C każdej wypowiedzi, wybiera spójną z kontekstem, pisze przebieg (części po 10 min) i podsumowanie po polsku i po angielsku | 3,0 GB |
-| LFM2-2.6B-Transcript Q8_0 (Liquid AI, tylko EN) | `CorrectionModel` | opcja Correct: propozycje poprawek; tłumacz PL → EN | 2,7 GB |
-| MEMORYDistillPL-1.5B Q8_0 | `CheckModel` | opcja Correct: recenzje; tłumacz EN → PL | 1,6 GB |
+| Qwen 3.5 4B Q3_K_M (`hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M`) | `NotesModel`, `CorrectionModel`, `CheckModel` | **jedyny model tekstu**: notatka (porównuje wersje A/B/C, przebieg i podsumowanie PL i EN), korekta (propozycje i recenzje), tłumaczenia PL ↔ EN | 3,0 GB |
 
-Kontekst każdego modelu: największy mieszczący się w VRAM (max 16k), a jeśli Ollama mimo to wpuści część do RAM - mniejszy o 25% i przeładowanie.
+Kontekst modelu: największy mieszczący się w VRAM (do limitu modelu, Qwen 3.5: 256k; na RTX 4060 8 GB ok. 98k), a jeśli Ollama mimo to wpuści część do RAM - mniejszy o 25% i przeładowanie.
 
 Opcje zapytań:
 - `think: false` (tryb myślenia tylko wydłuża odpowiedź), `repeat_penalty 1.1`, limit `num_predict`;
@@ -44,8 +42,8 @@ Opcje zapytań:
 | Gemma 4 E2B (QAT) | zastąpiona | benchmark: 10/14 i 2 zmyślenia przepuszczone; ocena sensu była szumem (82% zdań "inny sens") |
 | Qwen 3.5 4B (Q4) | zastąpiony | 11/14, 1 zmyślenie przepuszczone; jako sprawdzający pisał własną notatkę zamiast TAK/NIE, gdy dostał zasady |
 | Llama 3.1 8B | zastąpiona | 12/14; notatka 1,5 h ~20 min; z kontekstem 16k szła w 13% na CPU |
-| LFM2-2.6B-Transcript | korekta + tłumacz PL → EN | notatka szczegółowa w 76 s, ale tylko po angielsku i z przekłamaniami |
-| MEMORYDistillPL-1.5B | sprawdzający w korekcie | jako autor notatki: odmowy, 150 słów na 1,5 h |
+| LFM2-2.6B-Transcript | usunięty (korekta + tłumacz PL → EN) | notatka szczegółowa w 76 s, ale tylko po angielsku i z przekłamaniami |
+| MEMORYDistillPL-1.5B | usunięty (sprawdzający w korekcie) | jako autor notatki: odmowy, 150 słów na 1,5 h |
 | Qwen 3.5 4B Q3_K_M | **model notatki** | notatka PL + EN z 3 wersji rozpoznania, 22 min nagrania = ~1,5 min |
 
 Benchmark: 14 punktów notatek z prawdziwych nagrań, model ocenia, czy transkrypcja je potwierdza ([benchmarki.md](benchmarki.md)).

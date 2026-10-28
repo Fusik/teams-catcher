@@ -2,7 +2,7 @@
 
 Portable aplikacja WPF (C#) działająca w tle (ikona w trayu). Wykrywa rozmowę/spotkanie w Microsoft Teams, nagrywa **tylko okno Teams** (obraz) i **tylko dźwięk Teams** (+ opcjonalnie własny mikrofon), zapisuje plik gotowy do transkrypcji.
 
-Status: plan. Kod: brak. Data: 2026-10-19.
+Status: działa (nagrywanie, transkrypcja, notatki, wyszukiwanie). Plan z 2026-10-19, aktualizacje w sekcjach 1a-1q.
 
 ---
 
@@ -369,7 +369,7 @@ Wnioski:
     - notatki 5-min jako własne powiadomienia w prawym dolnym rogu (sekcje z punktami, bez "brak", kolejne nad poprzednimi, znikają po 60 s, nie pod kursorem); dymek traya usunięty, bo ucinał treść do 250 znaków.
 16. Pakowanie: mała paczka + pobieranie u użytkownika (``Core/Components.cs``, okno "Components", opis: ``docs/07-setup/instalacja.md``):
     - w paczce: exe, ffmpeg, modele sherpa, model pyannote community-1 (bramkowany na HF, licencja CC-BY-4.0 pozwala dołączyć), ``diarize.py``, ``pyannote-requirements.txt``;
-    - pobierane: whisper.cpp b5454 (oficjalne wydanie ma parakeet-cli), modele Whisper/Parakeet/VAD z HF, Temurin JRE 21.0.12.1, LanguageTool 6.6, Ollama 0.40.6 portable (tylko gdy żadna nie działa), llama3.1:8b + qwen3.5:4b przez ``/api/pull``, Python 3.12.14 + pakiety (uv 0.12.18, wersje z ``uv pip freeze``);
+    - pobierane: whisper.cpp b5454 (oficjalne wydanie ma parakeet-cli), modele Whisper/Parakeet/VAD z HF, Temurin JRE 21.0.12.1, LanguageTool 6.6, Ollama 0.40.7 portable (tylko gdy żadna nie działa), llama3.1:8b + qwen3.5:4b przez ``/api/pull``, Python 3.12.14 + pakiety (uv 0.12.18, wersje z ``uv pip freeze``);
     - wszystko przypięte wersją i SHA-256 (z API HF / GitHub / Adoptium), wznawianie (``.part`` + Range), ochrona przed zip slip, błąd jednego składnika nie zatrzymuje reszty;
     - ``publish.ps1 -Full`` = dawna paczka offline;
     - test na żywo (folder tymczasowy): whisper.cpp 0:23, JRE 0:02, LanguageTool 0:10, VAD; pyannote: Python + 96 pakietów 8:40 (PyTorch 2,4 GB pobrany w 2:24, instalacja 6 min), środowisko 4,4 GB, ``diarize.py`` na nim: cuda, 9 rozmówców jak na środowisku deweloperskim, 41 s (pierwsze uruchomienie 3:04 - rozruch); Ollama portable 2:55 + pull qwen2.5:0.5b + odpowiedź modelu OK; oficjalne parakeet-cli daje identyczne tokeny jak lokalny build;
@@ -386,7 +386,7 @@ Wnioski:
     - Correct zaczyna od surowego ``state.json``, Translate/Notes od poprawionego ``analysis\corrected.json``; kawałki na żywo bez zmian (wszystkie kroki);
     - zakładka COPILOT: ``notes-style.md`` + transkrypcja -> schowek, użytkownik wkleja w Copilota, odpowiedź ze schowka -> ``notes.xx.md``; aplikacja nic nie wysyła;
     - C = Qwen3-ASR-1.7B zamiast Parakeeta (asr.py w środowisku pyannote, qwen-asr 0.0.6; zdania A osobno, bo aligner Qwen3 nie zna polskiego); 22 min = 116 s na GPU, model 4,4 GB z HF przy pierwszym użyciu. Parakeet usunięty (kod, składnik). Kroki po nagraniu z opcji Transcript/Correct/Notes (Correct domyślnie wyłączony), bez przycisków. Transkrypcja na żywo: Whisper large-v3-turbo co ~30 s, widok "Live" (nie sprawdzona na prawdziwej rozmowie);
-    - AKTUALNE: kroki 1 Transcribe (auto), 2 Correct, 3 Notes; transkrypcja w języku rozmowy (krok Translate zdjęty z UI). Notatka = jeden model qwen3.5 4B Q3_K_M (``hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M``) z 3 rozpoznań mowy (A large-v3, B turbo, C Parakeet; brakujące B/C liczone w kroku Notes), części po 10 min, wybiera wersję spójną z kontekstem; ``notes.pl.md`` + ``notes.en.md``. Rick i Morty 22 min: 72 s, 100% GPU. WRITER/CHECKER (korekta): LFM2-2.6B + MEMORYDistillPL-1.5B, 4:45 zamiast 8:46; tłumacz PL->EN = WRITER + strażnik cudzego tekstu (13 -> 0 linii);
+    - AKTUALNE: kroki 1 Transcribe (auto), 2 Correct, 3 Notes; transkrypcja w języku rozmowy (krok Translate zdjęty z UI). Notatka = jeden model qwen3.5 4B Q3_K_M (``hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M``) z 3 rozpoznań mowy (A large-v3, B turbo, C Qwen3-ASR; brakujące B/C liczone w kroku Notes), części po 10 min, wybiera wersję spójną z kontekstem; ``notes.pl.md`` + ``notes.en.md``. Rick i Morty 22 min: 72 s, 100% GPU. WRITER/CHECKER (korekta) i tłumacz: ten sam Qwen 3.5 4B (LFM2-2.6B i MEMORYDistillPL-1.5B usunięte - jeden model mniej do pobrania); strażnik cudzego tekstu w tłumaczeniu (13 -> 0 linii);
     - (zastąpione) krok 4 Notes = LFM2-2.6B-Transcript (Liquid AI, tylko EN) z ``transcript.en.txt``: części po 15 min (przebieg z czasami) + podsumowanie, decyzje, zadania, pytania -> ``notes.en.md``; 1,5 h = ~65 s, ~2800 słów. MEMORYDistillPL-1.5B odrzucony (odmowy, 150 słów). Rozmowa po polsku: najpierw krok 3 Translate;
     - stara notatka lokalna (Llama + Qwen) zostaje tylko dla kawałków na żywo: części po 5 min, przebieg z czasami, kontekst max 16k i strażnik "100% GPU" (przy 16384 Llama szła 13% na CPU -> 12288). Kontrola Qwena bez zasad (pisał notatkę zamiast TAK/NIE).
 20. Kontekst modeli automatycznie z VRAM (zamiast stałego 8192; prośba o 128k - na 8 GB nie mieści się na GPU):
@@ -395,6 +395,28 @@ Wnioski:
     - części transkrypcji do notatek rosną z mniejszym kontekstem obu modeli (~2,5 znaku/token, min 12 000 znaków): na 8 GB ~40 000 znaków (~40 min rozmowy) zamiast 12 000;
     - log: "model X: context N tokens (fits the ... MB VRAM budget, KV cache f16)". Testy 198/198. Nie sprawdzone na żywo (aplikacja liczyła).
 17. UI: panel NOTES z regulowaną szerokością (GridSplitter, kolumny proporcjonalne, min. 800 + 300 px, okno min. 1140 px), listy rozwijane z ciemnym hoverem (domyślny styl ToggleButton w motywie).
+## 1q. Audyt i wyszukiwarka (2026-10-23): 230 testów jednostkowych + golden samples
+
+Audyt (punkty 1-9) - poprawki:
+1. Przeliczenie notatki nie kasuje ręcznych poprawek: stara wersja -> `analysis\history
+otes.xx.<data>.md`.
+2. `session.json`, `settings.json`, `knowledge.json` zapisywane przez `.tmp` + podmianę (przerwa w zapisie nie psuje odzyskiwania).
+3. Log na dysku `logs\yyyy-MM-dd.log` + zapis nieobsłużonych wyjątków (bez treści rozmów).
+4. `transcribe.pending`: analiza przerwana zamknięciem/crashem wraca do kolejki przy starcie; nagrania odzyskane po crashu też.
+5. Import bez dźwięku: czytelny log, folder usuwany; dźwięk przez `transcript.part.wav`.
+6. Golden samples (`TeamsCatcher.Tests\golden`, `dotnet test --filter Category=Quality`, ~3 min): WER + nazwy, które muszą paść. Próbki z syntezatora Windows (PL, EN, PL z szumem i 1,15x) - wszystkie WER 0% na large-v3; prawdziwe nagrania z ręczną treścią do dodania.
+7. Stały `seed` w zapytaniach do Ollamy: ten sam transkrypt = ta sama notatka (sprawdzone: 2 identyczne odpowiedzi).
+8. Ten plan zgodny z kodem (C = Qwen3-ASR, jeden model tekstu, MP4 z jedną ścieżką audio).
+9. Ostrzeżenie w logu, gdy adres Ollamy nie jest lokalny (transkrypcje wychodziłyby z komputera).
+
+Zakładka SEARCH (`Core/MeetingSearch.cs`):
+- źródła: transkrypcje i notatki nagrań (grupy Teams calls / Video files) + folder notatek .md (np. vault Obsidiana, grupa Notes folder; indeksy w `search-index\` obok exe, vault nietknięty);
+- po słowach: bez ogonków, odmiana przez wspólny początek słowa, "fraza" dosłownie;
+- po znaczeniu: `qwen3-embedding:0.6b` w Ollamie, pełne wektory 1024 (przycięcie do 256 podnosiło obce zdania z 0,38 do 0,45), float16, próg 0,5; indeks `analysis\search-index.json` po każdej analizie;
+- Ask Qwen: notatki wybierają nagrania (max 4, w odstępie 0,1 od najlepszego), Qwen czyta okna ±3 wypowiedzi wokół najlepszych miejsc, odpowiada z numerami fragmentów i zdaniem-dowodem; kod sprawdza, że cytat jest we fragmentach i ma wynik >= 0,5. Osobna kontrola TAK/NIE modelu odrzucona (odrzucała trafne, przepuszczała zmyślone);
+- kliknięcie wyniku: nagranie (także starsze niż 10 na liście), widok w RESULT, przewinięcie i zaznaczenie wypowiedzi; notatka z folderu otwiera się w Obsidianie;
+- sprawdzone w aplikacji przez UI Automation: wyszukiwanie, grupy, przejście do 0:08:28, Ask z folderem notatek (51 s).
+
 ---
 
 ## 2. Architektura
@@ -527,7 +549,7 @@ Detektor dostaje sygnał przez interfejs `Func<bool>` (rejestr w produkcji, fake
 |---|---|---|
 | Izolacja audio | Proces A gra sinus 440 Hz, proces B gra 1000 Hz. Process loopback na PID A przez 3 s. | W nagraniu energia 440 Hz >> 1000 Hz (algorytm Goertzla, stosunek > 20 dB) |
 | Izolacja obrazu | Okno testowe WPF wypełnione kolorem #FF00FF, na nim częściowo inne okno zielone. ffmpeg gfxcapture na HWND okna testowego, 2 s. | `ffprobe`/klatka PNG: piksel środkowy = #FF00FF (zakrycie nie przechodzi do nagrania) |
-| Pełna sesja | `RecordingSession` na oknie testowym + procesie z sinusem, 5 s, stop | `meeting.mp4` ma 1 ścieżkę wideo + 2 audio, długość 5 s ± 0,5 s; `transcript.wav` = 16 kHz mono |
+| Pełna sesja | `RecordingSession` na oknie testowym + procesie z sinusem, 5 s, stop | `meeting.mp4` ma 1 ścieżkę wideo + 1 zmiksowaną audio, długość 5 s ± 0,5 s; `transcript.wav` = 16 kHz stereo (L mikrofon, P Teams) |
 | Odporność na crash | Start sesji, `Process.Kill` na ffmpeg po 3 s, ponowne uruchomienie finalizacji | MP4 powstaje z ok. 3 s materiału |
 | Zmiana okna | Zamknięcie okna testowego w trakcie, otwarcie nowego | Dwa segmenty sklejone w jeden plik |
 

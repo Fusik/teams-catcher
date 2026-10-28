@@ -41,6 +41,11 @@ public partial class App : Application
         }
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        // nieobsłużony wyjątek = ślad w logs\ zamiast cichego zamknięcia
+        DispatcherUnhandledException += (_, ev) => FileLog.Write($"CRASH (UI): {ev.Exception}");
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) => FileLog.Write($"CRASH: {ev.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, ev) => FileLog.Write($"Unobserved task error: {ev.Exception}");
+        FileLog.Write($"Teams Catcher started (pid {Environment.ProcessId}).");
 
         var firstRun = !File.Exists(Settings.DefaultPath);
         var settings = Settings.Load(Settings.DefaultPath, Log);

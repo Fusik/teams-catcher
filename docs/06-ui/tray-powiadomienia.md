@@ -11,7 +11,7 @@
 
 Własne okno przy prawej krawędzi ekranu, nad paskiem zadań. Zastąpiło dymek traya, który ucinał treść do 250 znaków i znikał w centrum powiadomień Windows.
 
-- **Kiedy:** po każdym kawałku ~5 min (Live notes), jeśli notatka częściowa ma jakąś treść.
+- **Kiedy:** co 3 min rozmowy (Live notes): notatka z całej dotychczasowej transkrypcji na żywo (po 2 kawałkach z 2, po 3 z 3...).
 - **Treść:**
   - tytuł z przedziałem czasu ("Notatka 0:04:53-0:09:40") i nazwa nagrania;
   - sekcje z punktami (bez pustych i bez "brak");

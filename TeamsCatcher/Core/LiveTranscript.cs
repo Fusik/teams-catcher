@@ -20,6 +20,12 @@ public sealed class LiveTranscript(Settings settings, string ffmpeg, Action<stri
 
     public Task Completion => _run ?? Task.CompletedTask;
 
+    // Whisper turbo (~2 GB) i Qwen do notatek (~3 GB) nie mieszczą się naraz w 6 GB VRAM: GPU w trakcie rozmowy ma jeden użytkownik naraz.
+    public static readonly SemaphoreSlim Gpu = new(1, 1);
+
+    // Do kiedy (s od początku zapisu) transkrypcja na żywo jest już w pliku.
+    public double CoveredSeconds => _from;
+
     public static string PathIn(string folder) => Path.Combine(folder, LiveChunks.Dir, FileName);
 
     public void Schedule(RecordingSession s, CancellationToken ct)
@@ -32,8 +38,11 @@ public sealed class LiveTranscript(Settings settings, string ffmpeg, Action<stri
     {
         var dir = Path.Combine(s.Folder, LiveChunks.Dir);
         string snapshot = Path.Combine(dir, "live-text-snapshot.wav"), piece = Path.Combine(dir, "live-text-piece.wav"), output = Path.Combine(dir, "live-text");
+        var gpu = false;
         try
         {
+            await Gpu.WaitAsync(ct);
+            gpu = true;
             Directory.CreateDirectory(dir);
             if (await s.SnapshotTranscriptAsync(snapshot) == null) return;
             double length;
@@ -65,6 +74,7 @@ public sealed class LiveTranscript(Settings settings, string ffmpeg, Action<stri
         }
         finally
         {
+            if (gpu) Gpu.Release();
             foreach (var file in new[] { snapshot, piece, output + ".json" }) File.Delete(file);
         }
     }

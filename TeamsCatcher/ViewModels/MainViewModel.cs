@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -74,6 +74,11 @@ public sealed class MainViewModel : ObservableObject
         SaveKnowledgeCommand = RedoCommand;
         OpenNotesCommand = new RelayCommand(() => { if (NotesPath() is { } p) Process.Start(new ProcessStartInfo(p) { UseShellExecute = true }); });
         ImportVideoCommand = new RelayCommand(ChooseVideo);
+        SearchCommand = new AsyncRelayCommand(SearchAsync);
+        AskCommand = new AsyncRelayCommand(AskAsync);
+        BrowseNotesFolderCommand = new RelayCommand(BrowseNotesFolder);
+        SearchView = System.Windows.Data.CollectionViewSource.GetDefaultView(SearchResults);
+        SearchView.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(SearchHit.Kind)));
         SaveRulesCommand = new RelayCommand(SaveRules);
         OpenRulesCommand = new RelayCommand(() => { if (File.Exists(MeetingNotes.RulesPath)) Process.Start(new ProcessStartInfo(MeetingNotes.RulesPath) { UseShellExecute = true }); });
         SaveKnowledgeTextCommand = new RelayCommand(SaveKnowledgeText);
@@ -158,7 +163,7 @@ public sealed class MainViewModel : ObservableObject
     // Prawy panel: notatka PL / EN, transkrypcja i 3 rozpoznania mowy, z których powstała notatka (tylko istniejące pliki).
     static readonly (string Label, string File)[] AllViews =
     [
-        ("Live", Path.Combine(LiveChunks.Dir, TeamsCatcher.Core.LiveTranscript.FileName)), ("Notes PL", MeetingNotes.FileName("pl")), ("Notes EN", MeetingNotes.FileName("en")), ("Copilot", CopilotNotes.FileName),
+        ("Live", Path.Combine(LiveChunks.Dir, TeamsCatcher.Core.LiveTranscript.FileName)), ("Live notes", Path.Combine(LiveChunks.Dir, LiveNotesService.FileName)), ("Notes PL", MeetingNotes.FileName("pl")), ("Notes EN", MeetingNotes.FileName("en")), ("Copilot", CopilotNotes.FileName),
         ("Transcript PL", "transcript.pl.md"), ("Transcript EN", "transcript.en.md"),
         ("A large-v3", Path.Combine(WorkNotes.Dir, "01-whisper-large-v3.md")), ("B turbo", Path.Combine(WorkNotes.Dir, "02-whisper-turbo.md")),
         ("C Qwen3-ASR", Path.Combine(WorkNotes.Dir, "03-qwen3-asr.md")),
@@ -200,7 +205,8 @@ public sealed class MainViewModel : ObservableObject
         if (SelectedRecording is not { } r || !Directory.Exists(r.Folder)) return "";
         var analysis = Path.Combine(r.Folder, WorkNotes.Dir);
         return string.Join("|", Directory.EnumerateFiles(r.Folder).Concat(Directory.Exists(analysis) ? Directory.EnumerateFiles(analysis) : [])
-            .Append(TeamsCatcher.Core.LiveTranscript.PathIn(r.Folder)).Select(f => File.GetLastWriteTimeUtc(f).Ticks));
+            .Concat(LiveChunks.List(r.Folder).Select(c => Path.Combine(c.Folder, KnowledgeBase.QuestionsFile)))
+            .Append(TeamsCatcher.Core.LiveTranscript.PathIn(r.Folder)).Append(Path.Combine(r.Folder, LiveChunks.Dir, LiveNotesService.FileName)).Select(f => File.GetLastWriteTimeUtc(f).Ticks));
     }
 
     // Po objaśnieniu niejasnych słów: zapis do bazy wiedzy i analiza od nowa (dyskusja, tłumaczenie, notatki) z tym kontekstem, bez Whispera.
@@ -362,6 +368,121 @@ public sealed class MainViewModel : ObservableObject
         LoadRecordings();
     }
 
+    // --- zakładka SEARCH: transkrypcje i notatki wszystkich nagrań, wyniki w grupach Teams calls / Video files ---
+    string _searchQuery = "", _searchStatus = "";
+    bool _searchTeams = true, _searchVideo = true;
+    public string SearchQuery { get => _searchQuery; set => Set(ref _searchQuery, value); }
+    public bool SearchTeams { get => _searchTeams; set => Set(ref _searchTeams, value); }
+    public bool SearchVideo { get => _searchVideo; set => Set(ref _searchVideo, value); }
+    public string SearchStatus { get => _searchStatus; private set => Set(ref _searchStatus, value); }
+    public ObservableCollection<SearchHit> SearchResults { get; } = [];
+    public System.ComponentModel.ICollectionView SearchView { get; }
+    public AsyncRelayCommand SearchCommand { get; }
+
+    async Task SearchAsync()
+    {
+        SearchResults.Clear();
+        var query = SearchQuery.Trim();
+        if (query.Length == 0) return;
+        var folders = SearchSources();
+        var meaning = _settings.SearchModel.Length > 0 && (await Ollama.ModelsAsync(_settings, CancellationToken.None))?.Contains(_settings.SearchModel) == true;
+        SearchStatus = "Searching...";
+        try
+        {
+            var hits = await Task.Run(() => MeetingSearch.SearchAsync(query, folders, _settings, meaning,
+                (done, total) => Application.Current.Dispatcher.BeginInvoke(() => SearchStatus = $"Searching... {done}/{total} recordings (the first search indexes them)"),
+                CancellationToken.None));
+            foreach (var hit in hits) SearchResults.Add(hit);
+            SearchStatus = $"{hits.Count(h => h.Match == "words")} by words, {hits.Count(h => h.Match == "meaning")} by meaning, in {folders.Count} recordings and notes."
+                + (meaning ? "" : $" Search by meaning is off: download {(_settings.SearchModel.Length > 0 ? _settings.SearchModel : "the search model")} (tray menu: Components...).");
+        }
+        catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            SearchStatus = $"Search failed: {e.Message}";
+        }
+    }
+
+    public AsyncRelayCommand AskCommand { get; }
+
+    // Pytanie do Qwena: notatki wskazują nagrania, model czyta okna transkrypcji i wybiera fragmenty (cytowane z pliku).
+    async Task AskAsync()
+    {
+        SearchResults.Clear();
+        var question = SearchQuery.Trim();
+        if (question.Length == 0) return;
+        var folders = SearchSources();
+        var models = await Ollama.ModelsAsync(_settings, CancellationToken.None);
+        if (models?.Contains(_settings.NotesModel) != true)
+        {
+            SearchStatus = $"Ollama or {_settings.NotesModel} not available - use Search, or download the model (tray menu: Components...).";
+            return;
+        }
+        var meaning = _settings.SearchModel.Length > 0 && models.Contains(_settings.SearchModel);
+        SearchStatus = "Asking...";
+        if (_service.Transcribing) SearchStatus += " (an analysis is running - the answer may be slow)";
+        try
+        {
+            var clock = Stopwatch.StartNew();
+            var hits = await Task.Run(() => MeetingSearch.AskAsync(question, folders, _settings, meaning,
+                status => Application.Current.Dispatcher.BeginInvoke(() => { if (status.Length > 0) SearchStatus = status; }), CancellationToken.None));
+            foreach (var hit in hits) SearchResults.Add(hit);
+            var answers = hits.Count(h => h.Match == "Qwen answer");
+            SearchStatus = answers == 0 ? $"Qwen found no answer in the best matching recordings ({clock.Elapsed:mm\\:ss}). Try Search, or ask differently."
+                : $"{answers} recordings answer the question, {hits.Count - answers} fragments ({clock.Elapsed:mm\\:ss}). Fragments are quoted from the transcript.";
+        }
+        catch (Exception e) when (e is System.Net.Http.HttpRequestException or IOException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            SearchStatus = $"Ask failed: {e.Message}";
+        }
+    }
+
+    // Nagrania wg zaznaczonych grup + notatki .md ze wskazanego folderu.
+    List<string> SearchSources() =>
+    [
+        .. MeetingSearch.Recordings(_settings.OutputFolder).Where(f => MeetingSearch.KindOf(f) == MeetingSearch.Teams ? SearchTeams : SearchVideo),
+        .. SearchNotes ? MeetingSearch.NoteFiles(_settings.SearchNotesFolder) : [],
+    ];
+
+    bool _searchNotes = true;
+    public bool SearchNotes { get => _searchNotes; set => Set(ref _searchNotes, value); }
+    public string SearchNotesFolder
+    {
+        get => _settings.SearchNotesFolder;
+        set { _settings.SearchNotesFolder = value?.Trim() ?? ""; SaveSettings(); OnPropertyChanged(); }
+    }
+    public RelayCommand BrowseNotesFolderCommand { get; }
+
+    void BrowseNotesFolder()
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Notes folder to search (e.g. Obsidian vault)" };
+        if (Directory.Exists(_settings.SearchNotesFolder)) dialog.InitialDirectory = _settings.SearchNotesFolder;
+        if (dialog.ShowDialog() == true) SearchNotesFolder = dialog.FolderName;
+    }
+
+    // Notatka z folderu: w Obsidianie, jeśli leży w vaulcie (folder .obsidian wyżej), inaczej w domyślnym programie.
+    static void OpenNote(string file)
+    {
+        var vault = Path.GetDirectoryName(file);
+        while (vault != null && !Directory.Exists(Path.Combine(vault, ".obsidian"))) vault = Path.GetDirectoryName(vault);
+        var target = vault != null ? "obsidian://open?path=" + Uri.EscapeDataString(file) : file;
+        try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
+        catch (System.ComponentModel.Win32Exception) { Process.Start(new ProcessStartInfo(file) { UseShellExecute = true }); } // Obsidian niezainstalowany
+    }
+
+    // Wynik -> nagranie (także starsze niż 10 na liście) i widok, w którym jest; przewinięcie robi okno.
+    public void OpenHit(SearchHit hit)
+    {
+        if (hit.Kind == MeetingSearch.Notes)
+        {
+            OpenNote(hit.Folder);
+            return;
+        }
+        var item = Recordings.FirstOrDefault(r => r.Folder == hit.Folder);
+        if (item == null) Recordings.Add(item = new RecordingItem(hit.Recording, hit.Folder, hit.Kind));
+        SelectedRecording = item;
+        ResultView = hit.View;
+    }
+
     void ChooseVideo()
     {
         var dialog = new Microsoft.Win32.OpenFileDialog
@@ -417,11 +538,11 @@ public sealed class MainViewModel : ObservableObject
         set { _settings.RecordMicrophone = value; SaveSettings(); }
     }
 
-    // Notatki częściowe co LiveChunkMinutes w trakcie rozmowy (dymek w trayu); wyłączone = wszystko po rozmowie.
+    // Notatki narastające co LiveNotesMinutes w trakcie rozmowy (dymek w trayu, widok "Live notes"); wyłączone = wszystko po rozmowie.
     public bool LiveNotes
     {
-        get => _settings.LiveChunkMinutes > 0;
-        set { _settings.LiveChunkMinutes = value ? 5 : 0; SaveSettings(); }
+        get => _settings.LiveNotesMinutes > 0;
+        set { _settings.LiveNotesMinutes = value ? 3 : 0; SaveSettings(); }
     }
 
     public bool RecordVideo
@@ -449,11 +570,6 @@ public sealed class MainViewModel : ObservableObject
         set { _settings.DiarizationSpeakers = value.Count; SaveSettings(); OnPropertyChanged(); }
     }
 
-    public string TranscriptGlossary
-    {
-        get => _settings.TranscriptGlossary;
-        set { _settings.TranscriptGlossary = value; SaveSettings(); }
-    }
 
     public bool LiveTranscript
     {
@@ -491,13 +607,19 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // Wywoływane z dowolnego wątku (CatcherService, RecordingSession).
-    public void AddLog(string message) => Application.Current.Dispatcher.BeginInvoke(() =>
+    public void AddLog(string message)
+    {
+        FileLog.Write(message);
+        Application.Current.Dispatcher.BeginInvoke(() => ShowLog(message));
+    }
+
+    void ShowLog(string message)
     {
         if (message.TrimStart().StartsWith("step:")) _lastStep = message.Trim()[5..].Trim();
         _logLines.Enqueue($"{DateTime.Now:HH:mm:ss}  {message}");
         while (_logLines.Count > MaxLogLines) _logLines.Dequeue();
         Log = string.Join(Environment.NewLine, _logLines);
-    });
+    }
 
     void Refresh()
     {
@@ -598,8 +720,14 @@ public sealed class MainViewModel : ObservableObject
         var typed = Questions.Where(q => q.Meaning.Length > 0).ToDictionary(q => (q.Folder, q.Term.Term), q => q.Meaning);
         Questions.Clear();
         if (SelectedRecording is { } recording)
-            foreach (var term in KnowledgeBase.LoadQuestions(recording.Folder).Where(q => !kb.Knows(q.Term)))
+        {
+            // w trakcie rozmowy pytania są jeszcze w kawałkach na żywo (łączone po rozmowie) - pokazujemy je od razu
+            var all = new List<UnclearTerm>();
+            foreach (var q in KnowledgeBase.LoadQuestions(recording.Folder).Concat(LiveChunks.List(recording.Folder).SelectMany(c => KnowledgeBase.LoadQuestions(c.Folder))))
+                if (!kb.Knows(q.Term) && !all.Any(x => KnowledgeBase.SameWord(TranscriptLlm.Bare(x.Term), TranscriptLlm.Bare(q.Term)))) all.Add(q);
+            foreach (var term in all)
                 Questions.Add(new QuestionItem(term, recording.Folder) { Meaning = typed.GetValueOrDefault((recording.Folder, term.Term), "") });
+        }
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
     }

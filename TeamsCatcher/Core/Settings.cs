@@ -13,8 +13,9 @@ public sealed class Settings
     public bool RecordMicrophone { get; set; } = true;
     // Użytkownik wybiera wyniki: nagranie wideo (bez niego meeting.mp4 = sam dźwięk), transkrypcja (AutoTranscribe), korekta i notatka po niej (CorrectTranscript, WriteNotes).
     public bool RecordVideo { get; set; } = true;
-    // Kawałki w trakcie rozmowy co tyle minut (transkrypcja + notatka częściowa w dymku); 0 = tylko po rozmowie.
-    public int LiveChunkMinutes { get; set; } = 5;
+    // Notatka w trakcie rozmowy co tyle minut, z wszystkich dotychczasowych kawałków transkrypcji na żywo (potrzebuje LiveTranscript);
+    // razem z nią pytania "do wyjaśnienia". 0 = wszystko dopiero po rozmowie.
+    public int LiveNotesMinutes { get; set; } = 3;
     // podgląd transkrypcji w trakcie rozmowy (Whisper large-v3-turbo co ~30 s), widok "Live" w panelu RESULT
     public bool LiveTranscript { get; set; } = true;
     public int Fps { get; set; } = 15;
@@ -28,7 +29,6 @@ public sealed class Settings
     // Tłumaczenie PL <-> EN lokalnym modelem w Ollamie.
     public bool TranslateTranscript { get; set; } = true;
     // Nazwiska, firmy, terminy (po przecinku) - podpowiedź dla Whispera i korekty; uzupełniana nazwami z pierwszego przebiegu.
-    public string TranscriptGlossary { get; set; } = "";
     // Korekta zdań, w których Whisper był niepewny jakiegoś słowa.
     // kroki po transkrypcji, gdy zaznaczone w opcjach (Correct, Notes)
     // Correct (dyskusja modeli tekstu nad transkrypcją) domyślnie wyłączony: notatka sama porównuje 3 rozpoznania mowy
@@ -41,11 +41,17 @@ public sealed class Settings
    // Dwa modele tekstu z różnych rodzin, sprawdzające się krzyżowo (korekta, tłumaczenia, notatki); każdy mieści się w 6 GB VRAM.
     // Bielik 4.5B odrzucony: rozsypywał się przy notatkach i tłumaczeniach (test TVN).
     // małe modele (oba naraz w VRAM): test Rick i Morty - krok Correct 4:45 zamiast 8:46 z llama3.1:8b + qwen3.5:4b, jakość podobna
-    public string CorrectionModel { get; set; } = "hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0";
-    // Gemma 4 E2B zastąpiona: pomiar na 14 punktach notatek z nagrań - Gemma 10/14 i 2 zmyślenia przepuszczone, Qwen 3.5 4B 11/14 i 1.
-    public string CheckModel { get; set; } = "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0";
-    // jedyny model notatki (krok Notes): porównuje 3 rozpoznania mowy, pisze po polsku i po angielsku
-    public string NotesModel { get; set; } = "hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M";
+    // LFM2-2.6B-Transcript (tylko EN) i MEMORYDistillPL-1.5B usunięte: jeden model do korekty, tłumaczeń i notatek (Qwen 3.5 4B), mniej do pobrania.
+    const string Qwen = "hf.co/unsloth/Qwen3.5-4B-GGUF:Q3_K_M";
+    static readonly string[] RetiredModels = ["hf.co/LiquidAI/LFM2-2.6B-Transcript-GGUF:Q8_0", "hf.co/cenkierpiotr/MEMORYDistillPL-1.5b:Q8_0"];
+    public string CorrectionModel { get; set; } = Qwen;
+    public string CheckModel { get; set; } = Qwen;
+    // model notatki (krok Notes): porównuje 3 rozpoznania mowy, pisze po polsku i po angielsku
+    public string NotesModel { get; set; } = Qwen;
+    // wyszukiwanie po znaczeniu (zakładka SEARCH): model wektorów w Ollamie, wielojęzyczny (PL + EN); brak = tylko po słowach
+    public string SearchModel { get; set; } = "qwen3-embedding:0.6b";
+    // folder z notatkami .md przeszukiwany razem z nagraniami (np. vault Obsidiana); "" = tylko nagrania
+    public string SearchNotesFolder { get; set; } = "";
     // Budżet VRAM na modele tekstu (MB); 0 = cała karta. Docelowy komputer: 6 GB. Mieszczą się oba = zostają w pamięci.
     public int VramBudgetMb { get; set; }
     public string WhisperCli { get; set; } = Path.Combine(AppContext.BaseDirectory, "whisper", "whisper-cli.exe");
@@ -102,12 +108,15 @@ public sealed class Settings
         if (string.IsNullOrWhiteSpace(s.JavaExe)) s.JavaExe = defaults.JavaExe;
         if (string.IsNullOrWhiteSpace(s.LanguageToolDir)) s.LanguageToolDir = defaults.LanguageToolDir;
         s.DebateRounds = Math.Clamp(s.DebateRounds, 1, 6);
-        s.LiveChunkMinutes = Math.Clamp(s.LiveChunkMinutes, 0, 60);
-        if (string.IsNullOrWhiteSpace(s.CorrectionModel)) s.CorrectionModel = defaults.CorrectionModel;
-        if (string.IsNullOrWhiteSpace(s.CheckModel)) s.CheckModel = defaults.CheckModel;
+        s.LiveNotesMinutes = Math.Clamp(s.LiveNotesMinutes, 0, 30);
+        // settings.json sprzed zmiany ma zapisane dawne modele - przechodzą na Qwena
+        if (string.IsNullOrWhiteSpace(s.CorrectionModel) || RetiredModels.Contains(s.CorrectionModel)) s.CorrectionModel = defaults.CorrectionModel;
+        if (string.IsNullOrWhiteSpace(s.CheckModel) || RetiredModels.Contains(s.CheckModel)) s.CheckModel = defaults.CheckModel;
         if (string.IsNullOrWhiteSpace(s.NotesModel)) s.NotesModel = defaults.NotesModel;
+        s.SearchModel ??= defaults.SearchModel; // "" = wyszukiwanie tylko po słowach
+        s.SearchNotesFolder ??= "";
         if (!Uri.TryCreate(s.OllamaUrl, UriKind.Absolute, out var ollama) || ollama.Scheme is not ("http" or "https")) s.OllamaUrl = defaults.OllamaUrl;
-       s.TranscriptGlossary ??= "";
+        else if (!ollama.IsLoopback) log($"WARNING: OllamaUrl {ollama.Host} is not this computer - transcripts and notes are sent there.");
         if (string.IsNullOrWhiteSpace(s.DiarizationSegmentationModel)) s.DiarizationSegmentationModel = defaults.DiarizationSegmentationModel;
         if (string.IsNullOrWhiteSpace(s.DiarizationEmbeddingModel)) s.DiarizationEmbeddingModel = defaults.DiarizationEmbeddingModel;
         s.DiarizationThreshold = Math.Clamp(s.DiarizationThreshold, 0.1f, 1.5f);
@@ -116,5 +125,5 @@ public sealed class Settings
     }
 
     public void Save(string path) =>
-        File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        SafeFile.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
 }

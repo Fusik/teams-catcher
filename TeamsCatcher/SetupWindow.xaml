@@ -33,6 +33,10 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="80" />
                                 </Grid.ColumnDefinitions>
+                                <Button Grid.Column="2" Content="Copy link" HorizontalAlignment="Right" VerticalAlignment="Bottom" Padding="6,1" FontSize="11"
+                                        Style="{StaticResource App.Button.Secondary}" Command="{Binding CopyLinkCommand}"
+                                        Visibility="{Binding HasLink, Converter={StaticResource BoolToVis}}"
+                                        ToolTip="Copy the address (or the ollama pull command) to download it yourself when the automatic download fails" />
                                 <CheckBox IsChecked="{Binding Selected}" VerticalAlignment="Top" Margin="0,2,10,0" IsEnabled="{Binding Done, Converter={x:Static local:Not.Instance}}" />
                                 <StackPanel Grid.Column="1">
                                     <TextBlock Text="{Binding Component.Name}" FontWeight="SemiBold" />
