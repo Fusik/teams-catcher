@@ -11,6 +11,8 @@ param(
     [string]$Tools = "C:\Users\WF\Videos\TeamsCatcher\tools",
     [string]$Ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source,
     [switch]$NoZip,
+    # gdzie zapisać zip; inny dysk niż źródło = szybciej (czyta z jednego, pisze na drugi)
+    [string]$ZipDir = (Split-Path $Out -Parent),
     # folder modelu Qwen3-ASR (tylko -Full)
     [string]$QwenAsr = "$PSScriptRoot\TeamsCatcher\bin\x64\Debug\net10.0-windows10.0.19041.0\win-x64\models\Qwen3-ASR-1.7B",
     # Ollama i modele tekstu na tym komputerze (tylko -Full); nazwy jak w Settings.cs (notatki, korekta, sprawdzający)
@@ -39,41 +41,49 @@ foreach ($c in $copies) { if (-not (Test-Path $c[0])) { throw "Missing: $($c[0])
 $pyModel = "$Tools\pyannote-models\community-1"
 if (-not (Test-Path "$pyModel\config.yaml")) { throw "Missing pyannote model: $pyModel (download once: hf download pyannote/speaker-diarization-community-1)" }
 
+Write-Host "1/4 Czyszczenie starego folderu i dotnet publish..."
 if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
 # self-contained single-file: nie wymaga zainstalowanego .NET; biblioteki natywne (onnxruntime) rozpakowywane przy starcie
 dotnet publish "$PSScriptRoot\TeamsCatcher\TeamsCatcher.csproj" -c Release -r win-x64 --self-contained `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o $Out
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
+Write-Host "2/4 Kopiowanie modeli i narzedzi do paczki (robocopy, wielowatkowo)..."
+# robocopy: wielowątkowe, bez bufora (/J) - dużo szybsze niż Copy-Item; kody < 8 = sukces; .cache z Hugging Face pomijane
+function Rc($src, $dst, [string[]]$files = @()) {
+    robocopy $src $dst @files /E /MT:16 /J /NFL /NDL /NJH /NJS /NP /XD .cache | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE): $src -> $dst" }
+}
+function RcFile($file, $dstDir) { Write-Host "  $(Split-Path $file -Leaf)"; Rc (Split-Path $file) $dstDir @(Split-Path $file -Leaf) }
 New-Item -ItemType Directory -Force "$Out\diarization", "$Out\pyannote-models" | Out-Null
-foreach ($c in $copies) { New-Item -ItemType Directory -Force (Split-Path "$Out\$($c[1])") | Out-Null; Copy-Item $c[0] "$Out\$($c[1])" }
-# model pyannote bez kopii z cache Hugging Face
-Copy-Item $pyModel "$Out\pyannote-models\community-1" -Recurse -Exclude ".cache"
-Remove-Item "$Out\pyannote-models\community-1\.cache" -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($c in $copies) {
+    New-Item -ItemType Directory -Force (Split-Path "$Out\$($c[1])") | Out-Null
+    if ((Split-Path $c[0] -Leaf) -eq (Split-Path $c[1] -Leaf)) { RcFile $c[0] (Split-Path "$Out\$($c[1])") } else { Copy-Item $c[0] "$Out\$($c[1])" }
+}
+Rc $pyModel "$Out\pyannote-models\community-1"
 
 if ($Full) {
-    Get-ChildItem $WhisperBin -File | Where-Object { $_.Name -match '^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|cublas.*\.dll|cudart.*\.dll|nvrtc.*\.dll)$' } |
-        Copy-Item -Destination "$Out\whisper"
-    Copy-Item "$Tools\jre" "$Out\jre" -Recurse
-    Copy-Item "$Tools\languagetool" "$Out\languagetool" -Recurse
+    Write-Host "  whisper (silnik + dll)"
+    Rc $WhisperBin "$Out\whisper" @("whisper-cli.exe", "whisper.dll", "ggml*.dll", "cublas*.dll", "cudart*.dll", "nvrtc*.dll")
+    Write-Host "  jre"; Rc "$Tools\jre" "$Out\jre"
+    Write-Host "  languagetool"; Rc "$Tools\languagetool" "$Out\languagetool"
     # wersja C (Qwen3-ASR) - folder modelu jak po pobraniu w oknie Components
-    New-Item -ItemType Directory -Force "$Out\models" | Out-Null
-    Copy-Item $QwenAsr "$Out\models\Qwen3-ASR-1.7B" -Recurse -Exclude ".cache"
+    Write-Host "  Qwen3-ASR"; Rc $QwenAsr "$Out\models\Qwen3-ASR-1.7B"
     # venv uv wskazuje na Pythona w profilu użytkownika, więc do paczki idzie samodzielny Python + pakiety venv
     # Ollama (exe + lib z instalacji) i modele tekstu (manifesty + blob-y z ~\.ollama\models) w ollama\ - jak portable: OLLAMA_MODELS = ollama\models
     New-Item -ItemType Directory -Force "$Out\ollama\models\blobs" | Out-Null
-    Copy-Item "$OllamaHome\ollama.exe", "$OllamaHome\lib" "$Out\ollama" -Recurse
+    Write-Host "  ollama"; RcFile "$OllamaHome\ollama.exe" "$Out\ollama"; Rc "$OllamaHome\lib" "$Out\ollama\lib"
     foreach ($m in $TextModels) {
         $manifest = "manifests\hf.co\$($m -replace ':', '\')"
         New-Item -ItemType Directory -Force (Split-Path "$Out\ollama\models\$manifest") | Out-Null
         Copy-Item "$OllamaModels\$manifest" "$Out\ollama\models\$manifest"
         $json = Get-Content "$OllamaModels\$manifest" -Raw | ConvertFrom-Json
-        foreach ($d in @($json.config.digest) + @($json.layers.digest)) { Copy-Item "$OllamaModels\blobs\$($d -replace ':', '-')" "$Out\ollama\models\blobs" -Force }
+        foreach ($d in @($json.config.digest) + @($json.layers.digest)) { RcFile "$OllamaModels\blobs\$($d -replace ':', '-')" "$Out\ollama\models\blobs" }
     }
     $pyEnv = "$Tools\pyannote"
     $pyHome = ((Get-Content "$pyEnv\pyvenv.cfg") -match '^home\s*=' -replace '^home\s*=\s*', '').Trim()
-    Copy-Item $pyHome "$Out\pyannote" -Recurse
-    Copy-Item "$pyEnv\Lib\site-packages\*" "$Out\pyannote\Lib\site-packages" -Recurse -Force
+    Write-Host "  python + pakiety"; Rc $pyHome "$Out\pyannote"
+    Rc "$pyEnv\Lib\site-packages" "$Out\pyannote\Lib\site-packages"
 }
 
 @"
@@ -104,13 +114,50 @@ Model pyannote community-1: CC-BY-4.0, pyannote (https://huggingface.co/pyannote
 Dokumentacja: docs\ w repozytorium.
 "@ | Set-Content "$Out\README.txt" -Encoding utf8
 
+Write-Host "3/4 Liczenie rozmiaru folderu..."
 $size = (Get-ChildItem $Out -Recurse -File | Measure-Object Length -Sum).Sum / 1GB
 Write-Host ("Folder: {0} ({1:N2} GB)" -f $Out, $size)
 
 if (-not $NoZip) {
-    $zip = "$Out.zip"
+    Write-Host "4/4 Pakowanie zip..."
+    New-Item -ItemType Directory -Force $ZipDir | Out-Null
+    $zip = Join-Path $ZipDir ((Split-Path $Out -Leaf) + ".zip")
     if (Test-Path $zip) { Remove-Item $zip -Force }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory($Out, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
-    Write-Host ("Zip: {0} ({1:N2} GB)" -f $zip, ((Get-Item $zip).Length / 1GB))
+    $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+    if (-not $sevenZip -and (Test-Path "$env:ProgramFiles\7-Zip\7z.exe")) { $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe" }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    if ($sevenZip) {
+        # 7-Zip: store (-mx=0), wielowątkowo, pasek procentów w oknie; wpisy z nazwą folderu na początku
+        Write-Host "Zip przez 7-Zip (bez kompresji) -> $zip"
+        Push-Location (Get-Item $Out).Parent.FullName
+        try { & $sevenZip a -tzip -mx=0 -mmt=on -bsp1 -bso0 $zip (Split-Path $Out -Leaf); if ($LASTEXITCODE -ne 0) { throw "7z failed ($LASTEXITCODE)" } } finally { Pop-Location }
+    } else {
+    Add-Type -AssemblyName System.IO.Compression
+    # ręczne pakowanie plik po pliku (bez kompresji), żeby co kilka sekund pokazać postęp; wpisy z nazwą folderu na początku
+    $root = (Get-Item $Out).Parent.FullName
+    $files = Get-ChildItem $Out -Recurse -File
+    $total = ($files | Measure-Object Length -Sum).Sum
+    Write-Host ("Zip (bez kompresji): {0} plików, {1:N2} GB -> {2}" -f $files.Count, ($total / 1GB), $zip)
+    $done = 0L; $n = 0; $last = 0
+    $buf = New-Object byte[] (4MB)
+    $fs = [IO.File]::Create($zip)
+    $za = New-Object IO.Compression.ZipArchive($fs, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in $files) {
+            $n++
+            $entry = $za.CreateEntry($f.FullName.Substring($root.Length + 1).Replace('\', '/'), [IO.Compression.CompressionLevel]::NoCompression)
+            $es = $entry.Open(); $in = [IO.File]::OpenRead($f.FullName)
+            try {
+                while (($r = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                    $es.Write($buf, 0, $r); $done += $r
+                    if ($sw.ElapsedMilliseconds - $last -ge 3000) {
+                        $last = $sw.ElapsedMilliseconds
+                        Write-Host ("Zip: {0:N2} / {1:N2} GB ({2:P0}), plik {3}/{4}: {5}" -f ($done / 1GB), ($total / 1GB), ($done / $total), $n, $files.Count, $f.Name)
+                    }
+                }
+            } finally { $in.Dispose(); $es.Dispose() }
+        }
+    } finally { $za.Dispose(); $fs.Dispose() }
+    }
+    Write-Host ("Zip gotowy: {0} ({1:N2} GB) w {2:N0} s" -f $zip, ((Get-Item $zip).Length / 1GB), $sw.Elapsed.TotalSeconds)
 }

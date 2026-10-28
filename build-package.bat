@@ -6,6 +6,10 @@ rem Wynik: dist\TeamsCatcher\ i dist\TeamsCatcher.zip (albo dist\TeamsCatcher-fu
 setlocal
 cd /d "%~dp0"
 
+rem folder paczki i zip na dysku D (oszczedza miejsce na C); bez D: dist obok skryptu
+set "OUTROOT=%~dp0dist"
+if exist D:\ set "OUTROOT=D:\TeamsCatcher-build"
+
 set "MODE=%~1"
 if "%MODE%"=="" (
     echo Teams Catcher - tworzenie paczki
@@ -17,18 +21,18 @@ if "%MODE%"=="" if "%CHOICE%"=="1" set "MODE=small"
 if "%MODE%"=="" if "%CHOICE%"=="2" set "MODE=full"
 
 if /i "%MODE%"=="small" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish.ps1" -Out "%~dp0dist\TeamsCatcher"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish.ps1" -Out "%OUTROOT%\TeamsCatcher"
 ) else if /i "%MODE%"=="full" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish.ps1" -Out "%~dp0dist\TeamsCatcher-full" -Full
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish.ps1" -Out "%OUTROOT%\TeamsCatcher-full" -Full
 ) else (
     echo Nieznany wybor: "%MODE%%CHOICE%". Uzycie: build-package.bat small ^| full
     set ERR=1
     goto :end
 )
 set ERR=%ERRORLEVEL%
-if not "%ERR%"=="0" (echo. & echo BLAD: paczka nie powstala ^(kod %ERR%^).) else (echo. & echo Gotowe: folder dist)
+if not "%ERR%"=="0" (echo. & echo BLAD: paczka nie powstala ^(kod %ERR%^).) else (echo. & echo Gotowe: %OUTROOT%)
 
 :end
-rem przy dwukliku okno zostaje otwarte, z argumentem (skrypt, CI) - nie
-if "%~1"=="" pause
+rem okno zostaje otwarte zawsze; w skrypcie/CI ustaw NOPAUSE=1
+if not defined NOPAUSE pause
 exit /b %ERR%
